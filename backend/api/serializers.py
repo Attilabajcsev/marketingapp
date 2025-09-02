@@ -1,5 +1,6 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
+from .models import EmailCampaign
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -27,3 +28,18 @@ class OAuthUserRegistrationSerializer(serializers.ModelSerializer):
         user.set_unusable_password()
         user.save()
         return user
+
+
+class EmailCampaignSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmailCampaign
+        fields = ["id", "title", "content", "uploaded_at"]
+        read_only_fields = ["id", "uploaded_at"]
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        if request is None or request.user.is_anonymous:
+            raise serializers.ValidationError(
+                "Authentication required to create email campaigns."
+            )
+        return EmailCampaign.objects.create(user=request.user, **validated_data)

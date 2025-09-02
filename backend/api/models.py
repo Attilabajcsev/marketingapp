@@ -30,3 +30,27 @@ class BrandGuideline(models.Model):
     class Meta:
         ordering = ["-uploaded_at", "-id"]
 
+
+class UploadedCampaign(models.Model):
+    """Stores a user's uploaded historical email campaign file and parsed metadata"""
+
+    FILE_TYPES = [
+        ("csv", "CSV"),
+        ("txt", "Text"),
+        ("json", "JSON"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="uploaded_campaigns",
+    )
+    filename = models.CharField(max_length=255)
+    file_type = models.CharField(max_length=10, choices=FILE_TYPES)
+    raw_content = models.TextField()
+    parsed_campaigns = models.JSONField(default=list, blank=True)
+    upload_date = models.DateTimeField(auto_now_add=True)
+    campaign_count = models.IntegerField(default=0)
+
+    class Meta:
+        ordering = ["-upload_date", "-id"]

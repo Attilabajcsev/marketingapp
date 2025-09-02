@@ -1,6 +1,6 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
-from .models import BrandGuideline
+from .models import BrandGuideline, UploadedCampaign
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -43,3 +43,26 @@ class BrandGuidelineSerializer(serializers.ModelSerializer):
                 "Authentication required to create brand guidelines."
             )
         return BrandGuideline.objects.create(user=request.user, **validated_data)
+
+
+class UploadedCampaignSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UploadedCampaign
+        fields = [
+            "id",
+            "filename",
+            "file_type",
+            "raw_content",
+            "parsed_campaigns",
+            "upload_date",
+            "campaign_count",
+        ]
+        read_only_fields = ["id", "upload_date", "campaign_count"]
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        if request is None or request.user.is_anonymous:
+            raise serializers.ValidationError(
+                "Authentication required to upload campaigns."
+            )
+        return UploadedCampaign.objects.create(user=request.user, **validated_data)

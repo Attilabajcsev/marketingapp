@@ -28,6 +28,19 @@
 	// Simple prompt placeholder
 	let userPrompt: string = $state('');
 
+	// Uploads state
+	type UploadItem = {
+		id: number;
+		filename: string;
+		file_type: string;
+		upload_date: string;
+		campaign_count: number;
+	};
+	let uploads: UploadItem[] = $state([]);
+	let uploadsLoading: boolean = $state(false);
+	let uploadBusy: boolean = $state(false);
+	let fileToUpload: File | null = $state(null);
+
 	async function getdata() {
 		loading = true;
 		errorMessage = null;
@@ -110,7 +123,44 @@
 		console.log('User prompt submitted:', userPrompt);
 	}
 
+	async function loadUploads() {
+		uploadsLoading = true;
+		try {
+			const res = await fetch('api/uploaded-campaigns/', { credentials: 'include' });
+			if (res.ok) uploads = await res.json();
+		} catch (e) {
+			console.error(e);
+		} finally {
+			uploadsLoading = false;
+		}
+	}
+
+	async function uploadFile() {
+		if (!fileToUpload) return;
+		uploadBusy = true;
+		try {
+			const form = new FormData();
+			form.append('file', fileToUpload);
+			const res = await fetch('api/uploaded-campaigns/upload/', {
+				method: 'POST',
+				credentials: 'include',
+				body: form
+			});
+			if (!res.ok) {
+				console.error('Upload failed');
+				return;
+			}
+			await loadUploads();
+			fileToUpload = null;
+		} catch (e) {
+			console.error(e);
+		} finally {
+			uploadBusy = false;
+		}
+	}
+
 	onMount(loadCampaigns);
+	onMount(loadUploads);
 </script>
 
 <div class="bg-base-neutral relative min-h-[90vh] p-6">
@@ -205,6 +255,59 @@
 
 		<!-- Create campaign + Prompt -->
 		<div class="flex flex-col gap-6">
+			<!-- Uploads -->
+			<div class="card bg-base-200">
+				<div class="card-body gap-3">
+					<div class="flex items-center justify-between">
+						<h2 class="card-title">Upload Past Campaigns</h2>
+						<button class="btn btn-sm" onclick={loadUploads} disabled={uploadsLoading}>
+							{#if uploadsLoading}
+								<span class="loading loading-spinner loading-xs"></span>
+								Refreshing
+							{:else}
+								Refresh
+							{/if}
+						</button>
+					</div>
+					<input class="file-input file-input-bordered w-full" type="file" accept=".csv,.txt,.json" onchange={(e: Event) => { const t = e.target as HTMLInputElement; fileToUpload = (t.files && t.files[0]) || null; }} />
+					<button class="btn btn-neutral" onclick={uploadFile} disabled={uploadBusy || !fileToUpload}>
+						{#if uploadBusy}
+							<span class="loading loading-spinner loading-sm"></span>
+							Uploading
+						{:else}
+							Upload
+						{/if}
+					</button>
+
+					{#if uploads.length > 0}
+						<div class="overflow-x-auto">
+							<table class="table w-full">
+								<thead>
+									<tr>
+										<th>Filename</th>
+										<th>Type</th>
+										<th>Uploaded</th>
+										<th># Campaigns</th>
+									</tr>
+								</thead>
+								<tbody>
+									{#each uploads as u}
+										<tr>
+											<td>{u.filename}</td>
+											<td class="uppercase text-xs opacity-70">{u.file_type}</td>
+											<td>{new Date(u.upload_date).toLocaleString()}</td>
+											<td>{u.campaign_count}</td>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
+					{:else}
+						<p class="opacity-70">No uploads yet. Upload a CSV/TXT/JSON file.</p>
+					{/if}
+				</div>
+			</div>
+
 			<div class="card bg-base-200">
 				<div class="card-body gap-3">
 					<h2 class="card-title">Create Guideline</h2>

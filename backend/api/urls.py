@@ -1,6 +1,11 @@
 from django.urls import path
 from . import views
-from .views import brand_guidelines_list, brand_guidelines_create
+from .views import (
+    brand_guidelines_list,
+    brand_guidelines_create,
+    uploaded_campaigns_list,
+    upload_campaign_file,
+)
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
@@ -25,4 +30,13 @@ urlpatterns = [
         name="brand_guidelines_create",
     ),
     path("brand-guidelines/create", brand_guidelines_create),
+    # Uploaded campaign files
+    path("uploaded-campaigns/", uploaded_campaigns_list, name="uploaded_campaigns_list"),
+    path("uploaded-campaigns", uploaded_campaigns_list),
+    path(
+        "uploaded-campaigns/upload/",
+        upload_campaign_file,
+        name="upload_campaign_file",
+    ),
+    path("uploaded-campaigns/upload", upload_campaign_file),
 ]

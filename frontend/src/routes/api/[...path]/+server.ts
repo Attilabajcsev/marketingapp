@@ -25,21 +25,37 @@ export const GET: RequestHandler = async ({ request, cookies, params }) => {
 };
 
 export const POST: RequestHandler = async ({ request, cookies, params }) => {
-	const body = await request.json();
 	const token = cookies.get('accessToken');
 	const path = params.path;
 	const normalized = path.endsWith('/') ? path : `${path}/`;
 	const url = `${BACKEND_URL}/${normalized}`;
-	const headers = request.headers;
 
-	if (token) {
-		headers.set('Authorization', `Bearer ${token}`);
+	// Build fresh headers to avoid carrying over Content-Type for multipart
+	const headers = new Headers();
+	if (token) headers.set('Authorization', `Bearer ${token}`);
+	// Pass through Accept if present
+	const accept = request.headers.get('accept');
+	if (accept) headers.set('accept', accept);
+
+	let body: BodyInit | undefined;
+	const contentType = request.headers.get('content-type') || '';
+	if (contentType.startsWith('application/json')) {
+		const jsonBody = await request.json();
+		headers.set('content-type', 'application/json');
+		body = JSON.stringify(jsonBody);
+	} else if (contentType.startsWith('multipart/form-data')) {
+		// Let fetch set the correct boundary by not setting content-type manually
+		const form = await request.formData();
+		body = form as unknown as BodyInit;
+	} else {
+		// Fallback: stream raw body
+		body = request.body as BodyInit;
 	}
 
 	const response = await fetch(url, {
-		method: request.method,
+		method: 'POST',
 		headers,
-		body: JSON.stringify(body)
+		body
 	});
 
 	if (!response.ok) return json({ error: response.statusText }, { status: response.status });

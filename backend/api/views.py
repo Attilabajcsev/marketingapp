@@ -4,8 +4,9 @@ from .serializers import (
     UserSerializer,
     OAuthUserRegistrationSerializer,
     BrandGuidelineSerializer,
+    UploadedCampaignSerializer,
 )
-from .models import BrandGuideline
+from .models import BrandGuideline, UploadedCampaign
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -13,6 +14,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from google.oauth2 import id_token
 from google.auth.transport import requests
 from rest_framework.request import Request
+from rest_framework import status
 import json
 from typing import Any
 
@@ -165,3 +167,55 @@ def brand_guidelines_create(request: Request) -> Response:
         guideline = serializer.save()
         return Response(BrandGuidelineSerializer(guideline).data, status=201)
     return Response(serializer.errors, status=400)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def uploaded_campaigns_list(request: Request) -> Response:
+    """
+    Returns metadata about uploaded campaign files for the authenticated user.
+    Endpoint: uploaded-campaigns/
+    """
+    uploads = UploadedCampaign.objects.filter(user=request.user).order_by(
+        "-upload_date", "-id"
+    )
+    serializer = UploadedCampaignSerializer(uploads, many=True)
+    return Response(serializer.data)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def upload_campaign_file(request: Request) -> Response:
+    """
+    Accepts multipart/form-data with 'file' field, size <= 5MB.
+    Auto-detects file_type from extension and stores raw content.
+    Endpoint: uploaded-campaigns/upload/
+    """
+    if "file" not in request.FILES:
+        return Response({"error": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+    upload = request.FILES["file"]
+    max_size = 5 * 1024 * 1024
+    if upload.size > max_size:
+        return Response({"error": "File too large (max 5MB)"}, status=status.HTTP_400_BAD_REQUEST)
+
+    filename: str = upload.name
+    ext = filename.split(".")[-1].lower() if "." in filename else ""
+    if ext not in ["csv", "txt", "json"]:
+        return Response({"error": "Unsupported file type"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        raw_bytes = upload.read()
+        raw_text = raw_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        return Response({"error": "Failed to read file"}, status=status.HTTP_400_BAD_REQUEST)
+
+    created = UploadedCampaign.objects.create(
+        user=request.user,
+        filename=filename,
+        file_type=ext,
+        raw_content=raw_text,
+        parsed_campaigns=[],
+        campaign_count=0,
+    )
+    return Response(UploadedCampaignSerializer(created).data, status=201)

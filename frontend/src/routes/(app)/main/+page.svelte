@@ -14,6 +14,7 @@
 		id: number;
 		title: string;
 		content: string;
+		guideline_type?: string;
 		uploaded_at: string;
 	};
 
@@ -22,6 +23,7 @@
 	let createLoading: boolean = $state(false);
 	let newTitle: string = $state('');
 	let newContent: string = $state('');
+	let newType: string = $state('tone');
 
 	// Simple prompt placeholder
 	let userPrompt: string = $state('');
@@ -82,7 +84,7 @@
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				credentials: 'include',
-				body: JSON.stringify({ title: newTitle.trim(), content: newContent.trim() })
+				body: JSON.stringify({ title: newTitle.trim(), content: newContent.trim(), guideline_type: newType })
 			});
 			if (!response.ok) {
 				if (response.status === 401) return goto('/login');
@@ -93,6 +95,7 @@
 			await loadCampaigns();
 			newTitle = '';
 			newContent = '';
+			newType = 'tone';
 			createLoading = false;
 		} catch (err) {
 			console.error(err);
@@ -181,6 +184,7 @@
 							<thead>
 								<tr>
 									<th>Title</th>
+									<th>Type</th>
 									<th>Created</th>
 								</tr>
 							</thead>
@@ -188,6 +192,7 @@
 								{#each campaigns as c}
 									<tr>
 										<td class="font-medium">{c.title}</td>
+										<td class="uppercase text-xs opacity-70">{c.guideline_type}</td>
 										<td>{new Date(c.uploaded_at).toLocaleString()}</td>
 									</tr>
 								{/each}
@@ -209,6 +214,12 @@
 						placeholder="Guideline title"
 						bind:value={newTitle}
 					/>
+					<select class="select select-bordered" bind:value={newType}>
+						<option value="tone">Tone of Voice</option>
+						<option value="terminology">Company Terminology</option>
+						<option value="style">Writing Style</option>
+						<option value="rules">Content Rules</option>
+					</select>
 					<textarea
 						class="textarea textarea-bordered min-h-28"
 						placeholder="Guideline content (tone, rules, etc.)"

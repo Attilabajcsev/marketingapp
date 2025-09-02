@@ -6,6 +6,7 @@
         id: number;
         title: string;
         content: string;
+        guideline_type: string;
         uploaded_at: string;
     };
 
@@ -83,6 +84,7 @@
                 <thead>
                     <tr>
                         <th>Title</th>
+                        <th>Type</th>
                         <th>Created</th>
                     </tr>
                 </thead>
@@ -90,6 +92,7 @@
                     {#each guidelines as g}
                         <tr>
                             <td class="font-medium">{g.title}</td>
+                            <td class="uppercase text-xs opacity-70">{g.guideline_type}</td>
                             <td>{new Date(g.uploaded_at).toLocaleString()}</td>
                         </tr>
                     {/each}

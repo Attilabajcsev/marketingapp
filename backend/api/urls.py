@@ -18,9 +18,11 @@ urlpatterns = [
     path("user/profile/", views.user_profile, name="user_profile"),
     # Brand guidelines
     path("brand-guidelines/", brand_guidelines_list, name="brand_guidelines_list"),
+    path("brand-guidelines", brand_guidelines_list),
     path(
         "brand-guidelines/create/",
         brand_guidelines_create,
         name="brand_guidelines_create",
     ),
+    path("brand-guidelines/create", brand_guidelines_create),
 ]

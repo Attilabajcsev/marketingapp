@@ -33,7 +33,7 @@ class OAuthUserRegistrationSerializer(serializers.ModelSerializer):
 class BrandGuidelineSerializer(serializers.ModelSerializer):
     class Meta:
         model = BrandGuideline
-        fields = ["id", "title", "content", "uploaded_at"]
+        fields = ["id", "title", "content", "guideline_type", "uploaded_at"]
         read_only_fields = ["id", "uploaded_at"]
 
     def create(self, validated_data):

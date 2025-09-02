@@ -12,6 +12,15 @@ class BrandGuideline(models.Model):
     )
     title = models.CharField(max_length=255)
     content = models.TextField()
+    GUIDELINE_TYPES = [
+        ("tone", "Tone of Voice"),
+        ("terminology", "Company Terminology"),
+        ("style", "Writing Style"),
+        ("rules", "Content Rules"),
+    ]
+    guideline_type = models.CharField(
+        max_length=20, choices=GUIDELINE_TYPES, default="tone"
+    )
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:

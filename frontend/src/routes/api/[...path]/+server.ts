@@ -7,7 +7,8 @@ const BACKEND_URL = env.BACKEND_URL;
 export const GET: RequestHandler = async ({ request, cookies, params }) => {
 	const token = cookies.get('accessToken');
 	const path = params.path;
-	const url = `${BACKEND_URL}/${path}`;
+	const normalized = path.endsWith('/') ? path : `${path}/`;
+	const url = `${BACKEND_URL}/${normalized}`;
 	const headers = request.headers;
 
 	if (token) {
@@ -27,7 +28,8 @@ export const POST: RequestHandler = async ({ request, cookies, params }) => {
 	const body = await request.json();
 	const token = cookies.get('accessToken');
 	const path = params.path;
-	const url = `${BACKEND_URL}/${path}`;
+	const normalized = path.endsWith('/') ? path : `${path}/`;
+	const url = `${BACKEND_URL}/${normalized}`;
 	const headers = request.headers;
 
 	if (token) {
@@ -42,13 +44,15 @@ export const POST: RequestHandler = async ({ request, cookies, params }) => {
 
 	if (!response.ok) return json({ error: response.statusText }, { status: response.status });
 
-	return json(response, { status: 200 });
+	const responseJSON = await response.json();
+	return json(responseJSON, { status: 200 });
 };
 
 export const DELETE: RequestHandler = async ({ request, cookies, params }) => {
 	const token = cookies.get('accessToken');
 	const path = params.path;
-	const url = `${BACKEND_URL}/${path}`;
+	const normalized = path.endsWith('/') ? path : `${path}/`;
+	const url = `${BACKEND_URL}/${normalized}`;
 	const headers = request.headers;
 
 	if (token) {

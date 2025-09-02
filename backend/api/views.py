@@ -3,9 +3,9 @@ from django.conf import settings
 from .serializers import (
     UserSerializer,
     OAuthUserRegistrationSerializer,
-    EmailCampaignSerializer,
+    BrandGuidelineSerializer,
 )
-from .models import EmailCampaign
+from .models import BrandGuideline
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -135,33 +135,33 @@ def oauth_google(request: Request) -> Response:
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def email_campaigns_list(request: Request) -> Response:
+def brand_guidelines_list(request: Request) -> Response:
     """
-    Returns all email campaigns for the authenticated user.
-    Endpoint: email-campaigns/
+    Returns all brand guidelines for the authenticated user.
+    Endpoint: brand-guidelines/
     """
-    campaigns = EmailCampaign.objects.filter(user=request.user).order_by(
+    guidelines = BrandGuideline.objects.filter(user=request.user).order_by(
         "-uploaded_at", "-id"
     )
-    serializer = EmailCampaignSerializer(campaigns, many=True)
+    serializer = BrandGuidelineSerializer(guidelines, many=True)
     return Response(serializer.data)
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-def email_campaigns_create(request: Request) -> Response:
+def brand_guidelines_create(request: Request) -> Response:
     """
-    Creates a new email campaign for the authenticated user.
-    Endpoint: email-campaigns/
+    Creates a new brand guideline for the authenticated user.
+    Endpoint: brand-guidelines/
 
     Request body:
       - title: string
       - content: string
     """
-    serializer = EmailCampaignSerializer(
+    serializer = BrandGuidelineSerializer(
         data=request.data, context={"request": request}
     )
     if serializer.is_valid():
-        campaign = serializer.save()
-        return Response(EmailCampaignSerializer(campaign).data, status=201)
+        guideline = serializer.save()
+        return Response(BrandGuidelineSerializer(guideline).data, status=201)
     return Response(serializer.errors, status=400)

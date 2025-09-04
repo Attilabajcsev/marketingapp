@@ -15,6 +15,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 from rest_framework.request import Request
 from rest_framework import status
+import csv as pycsv
 import json
 from typing import Any
 
@@ -210,12 +211,83 @@ def upload_campaign_file(request: Request) -> Response:
     except Exception:
         return Response({"error": "Failed to read file"}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Parse campaigns based on file type
+    def _normalize_record(record: dict) -> dict:
+        title = (
+            record.get("title")
+            or record.get("subject")
+            or record.get("Subject")
+            or record.get("Title")
+            or "Untitled"
+        )
+        content = (
+            record.get("content")
+            or record.get("body")
+            or record.get("Body")
+            or record.get("Content")
+            or ""
+        )
+        normalized = {"title": str(title).strip(), "content": str(content).strip()}
+        # include other keys as metadata if present
+        extras = {k: v for k, v in record.items() if k not in ["title", "subject", "Subject", "Title", "content", "body", "Body", "Content"]}
+        if extras:
+            normalized["meta"] = extras
+        return normalized
+
+    def parse_csv(text: str) -> list[dict]:
+        try:
+            rows = list(pycsv.DictReader(text.splitlines()))
+            return [_normalize_record(r) for r in rows if any(v for v in r.values())]
+        except Exception:
+            return []
+
+    def parse_txt(text: str) -> list[dict]:
+        # Heuristics: split on lines of dashes/equals or two+ blank lines
+        import re
+
+        blocks = re.split(r"\n\s*[-=]{3,}\s*\n|\n{2,}", text.strip())
+        items = []
+        for block in blocks:
+            b = block.strip()
+            if not b:
+                continue
+            lines = [ln.strip() for ln in b.splitlines() if ln.strip()]
+            if not lines:
+                continue
+            title = lines[0][:120]
+            content = "\n".join(lines[1:]) if len(lines) > 1 else ""
+            items.append({"title": title, "content": content})
+        return items
+
+    def parse_json(text: str) -> list[dict]:
+        try:
+            data = json.loads(text)
+        except Exception:
+            return []
+        records: list[dict] = []
+        if isinstance(data, list):
+            records = [r for r in data if isinstance(r, dict)]
+        elif isinstance(data, dict):
+            if isinstance(data.get("campaigns"), list):
+                records = [r for r in data.get("campaigns") if isinstance(r, dict)]
+            else:
+                records = [data]
+        return [_normalize_record(r) for r in records]
+
+    parsed: list[dict]
+    if ext == "csv":
+        parsed = parse_csv(raw_text)
+    elif ext == "txt":
+        parsed = parse_txt(raw_text)
+    else:
+        parsed = parse_json(raw_text)
+
     created = UploadedCampaign.objects.create(
         user=request.user,
         filename=filename,
         file_type=ext,
         raw_content=raw_text,
-        parsed_campaigns=[],
-        campaign_count=0,
+        parsed_campaigns=parsed,
+        campaign_count=len(parsed),
     )
     return Response(UploadedCampaignSerializer(created).data, status=201)

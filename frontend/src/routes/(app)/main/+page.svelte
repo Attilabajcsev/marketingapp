@@ -61,6 +61,36 @@
 	// Simple prompt placeholder
 	let userPrompt: string = $state('');
 
+	// Vector search state
+	type SearchItem = { id: number; text: string; source_type: string; source_id: number };
+	let searchQuery: string = $state('');
+	let searchLoading: boolean = $state(false);
+	let searchResults: SearchItem[] = $state([]);
+
+	async function runSearch() {
+		if (!searchQuery.trim()) return;
+		searchLoading = true;
+		try {
+			const res = await fetch('api/vectorstore/search/', {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ query: searchQuery.trim(), top_k: 5 })
+			});
+			if (!res.ok) {
+				searchResults = [];
+				return;
+			}
+			const data = await res.json();
+			searchResults = data.results ?? [];
+		} catch (e) {
+			console.error(e);
+			searchResults = [];
+		} finally {
+			searchLoading = false;
+		}
+	}
+
 	// Uploads state
 	type UploadItem = {
 		id: number;
@@ -435,6 +465,40 @@
 						bind:value={userPrompt}
 					/>
 					<button class="btn" onclick={submitPrompt}>Submit</button>
+				</div>
+			</div>
+
+			<!-- Search Indexed Content -->
+			<div class="card bg-base-200">
+				<div class="card-body gap-3">
+					<h2 class="card-title">Search Indexed Content</h2>
+					<div class="flex gap-2">
+						<input class="input input-bordered flex-1" type="text" placeholder="Search query"
+							bind:value={searchQuery} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') runSearch(); }} />
+						<button class="btn btn-neutral" onclick={runSearch} disabled={searchLoading}>
+							{#if searchLoading}
+								<span class="loading loading-spinner loading-sm"></span>
+								Searching
+							{:else}
+								Search
+							{/if}
+						</button>
+					</div>
+
+					{#if searchResults.length > 0}
+						<div class="space-y-2 max-h-80 overflow-y-auto">
+							{#each searchResults as r, i}
+								<div class="card bg-base-100">
+									<div class="card-body p-4">
+										<p class="text-xs opacity-70 mb-1">{i + 1}. Source: {r.source_type}#{r.source_id}</p>
+										<p class="whitespace-pre-wrap">{r.text}</p>
+									</div>
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<p class="opacity-70">Enter a query to search your indexed guidelines and uploads.</p>
+					{/if}
 				</div>
 			</div>
 		</div>

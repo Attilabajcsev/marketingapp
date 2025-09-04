@@ -30,10 +30,8 @@ export const POST: RequestHandler = async ({ request, cookies, params }) => {
 	const normalized = path.endsWith('/') ? path : `${path}/`;
 	const url = `${BACKEND_URL}/${normalized}`;
 
-	// Build fresh headers to avoid carrying over Content-Type for multipart
 	const headers = new Headers();
 	if (token) headers.set('Authorization', `Bearer ${token}`);
-	// Pass through Accept if present
 	const accept = request.headers.get('accept');
 	if (accept) headers.set('accept', accept);
 
@@ -44,16 +42,50 @@ export const POST: RequestHandler = async ({ request, cookies, params }) => {
 		headers.set('content-type', 'application/json');
 		body = JSON.stringify(jsonBody);
 	} else if (contentType.startsWith('multipart/form-data')) {
-		// Let fetch set the correct boundary by not setting content-type manually
 		const form = await request.formData();
 		body = form as unknown as BodyInit;
 	} else {
-		// Fallback: stream raw body
 		body = request.body as BodyInit;
 	}
 
 	const response = await fetch(url, {
 		method: 'POST',
+		headers,
+		body
+	});
+
+	if (!response.ok) return json({ error: response.statusText }, { status: response.status });
+
+	const responseJSON = await response.json();
+	return json(responseJSON, { status: 200 });
+};
+
+export const PUT: RequestHandler = async ({ request, cookies, params }) => {
+	const token = cookies.get('accessToken');
+	const path = params.path;
+	const normalized = path.endsWith('/') ? path : `${path}/`;
+	const url = `${BACKEND_URL}/${normalized}`;
+
+	const headers = new Headers();
+	if (token) headers.set('Authorization', `Bearer ${token}`);
+	const accept = request.headers.get('accept');
+	if (accept) headers.set('accept', accept);
+
+	let body: BodyInit | undefined;
+	const contentType = request.headers.get('content-type') || '';
+	if (contentType.startsWith('application/json')) {
+		const jsonBody = await request.json();
+		headers.set('content-type', 'application/json');
+		body = JSON.stringify(jsonBody);
+	} else if (contentType.startsWith('multipart/form-data')) {
+		const form = await request.formData();
+		body = form as unknown as BodyInit;
+	} else {
+		body = request.body as BodyInit;
+	}
+
+	const response = await fetch(url, {
+		method: 'PUT',
 		headers,
 		body
 	});

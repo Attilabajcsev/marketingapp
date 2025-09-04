@@ -18,6 +18,39 @@
 		uploaded_at: string;
 	};
 
+	// Edit guideline state
+	let editingId: number | null = $state(null);
+	let editTitle: string = $state('');
+	let editType: string = $state('tone');
+	let editContent: string = $state('');
+
+	function startEdit(c: Campaign) {
+		editingId = c.id;
+		editTitle = c.title;
+		editType = c.guideline_type || 'tone';
+		editContent = c.content;
+	}
+
+	async function saveEdit() {
+		if (editingId == null) return;
+		const res = await fetch(`api/brand-guidelines/${editingId}/`, {
+			method: 'PUT',
+			credentials: 'include',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ title: editTitle, content: editContent, guideline_type: editType })
+		});
+		if (res.ok) {
+			await loadCampaigns();
+			editingId = null;
+		}
+	}
+
+	async function deleteGuideline(id: number) {
+		if (!confirm('Delete this guideline?')) return;
+		const res = await fetch(`api/brand-guidelines/${id}/`, { method: 'DELETE', credentials: 'include' });
+		if (res.ok) await loadCampaigns();
+	}
+
 	let campaigns: Campaign[] = $state([]);
 	let campaignsLoading: boolean = $state(true);
 	let createLoading: boolean = $state(false);
@@ -172,6 +205,12 @@
 		}
 	}
 
+	async function deleteUpload(id: number) {
+		if (!confirm('Delete this upload?')) return;
+		const res = await fetch(`api/uploaded-campaigns/${id}/`, { method: 'DELETE', credentials: 'include' });
+		if (res.ok) await loadUploads();
+	}
+
 	onMount(loadCampaigns);
 	onMount(loadUploads);
 </script>
@@ -254,9 +293,41 @@
 							<tbody>
 								{#each campaigns as c}
 									<tr>
-										<td class="font-medium">{c.title}</td>
-										<td class="uppercase text-xs opacity-70">{c.guideline_type}</td>
-										<td>{new Date(c.uploaded_at).toLocaleString()}</td>
+										<td class="font-medium">
+											{#if editingId === c.id}
+												<input class="input input-sm input-bordered w-full" bind:value={editTitle} />
+											{:else}
+												{c.title}
+											{/if}
+										</td>
+										<td class="uppercase text-xs opacity-70">
+											{#if editingId === c.id}
+												<select class="select select-bordered select-sm" bind:value={editType}>
+													<option value="tone">tone</option>
+													<option value="terminology">terminology</option>
+													<option value="style">style</option>
+													<option value="rules">rules</option>
+												</select>
+											{:else}
+												{c.guideline_type}
+											{/if}
+										</td>
+										<td>
+											{#if editingId === c.id}
+												<textarea class="textarea textarea-bordered textarea-sm w-full" bind:value={editContent} />
+											{:else}
+												{new Date(c.uploaded_at).toLocaleString()}
+											{/if}
+										</td>
+										<td class="w-44 text-right">
+											{#if editingId === c.id}
+												<button class="btn btn-xs btn-neutral mr-2" onclick={saveEdit}>Save</button>
+												<button class="btn btn-xs" onclick={() => (editingId = null)}>Cancel</button>
+											{:else}
+												<button class="btn btn-xs mr-2" onclick={() => startEdit(c)}>Edit</button>
+												<button class="btn btn-xs btn-error" onclick={() => deleteGuideline(c.id)}>Delete</button>
+											{/if}
+										</td>
 									</tr>
 								{/each}
 							</tbody>
@@ -309,7 +380,10 @@
 											<td><a class="link link-primary" href="#" onclick={() => openUploadDetail(u.id)}>{u.filename}</a></td>
 											<td class="uppercase text-xs opacity-70">{u.file_type}</td>
 											<td>{new Date(u.upload_date).toLocaleString()}</td>
-											<td>{u.campaign_count}</td>
+											<td class="flex items-center gap-2">
+												<span>{u.campaign_count}</span>
+												<button class="btn btn-xs btn-error ml-auto" onclick={() => deleteUpload(u.id)}>Delete</button>
+											</td>
 										</tr>
 									{/each}
 								</tbody>

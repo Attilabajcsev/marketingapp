@@ -170,6 +170,31 @@ def brand_guidelines_create(request: Request) -> Response:
     return Response(serializer.errors, status=400)
 
 
+@api_view(["PUT", "DELETE"])
+@permission_classes([IsAuthenticated])
+def brand_guideline_detail(request: Request, guideline_id: int) -> Response:
+    """
+    Update or delete a single brand guideline for the authenticated user.
+    Endpoint: brand-guidelines/<guideline_id>/
+    """
+    guideline = BrandGuideline.objects.filter(id=guideline_id, user=request.user).first()
+    if not guideline:
+        return Response({"error": "Not found"}, status=404)
+
+    if request.method == "DELETE":
+        guideline.delete()
+        return Response(status=204)
+
+    # PUT update
+    serializer = BrandGuidelineSerializer(
+        guideline, data=request.data, partial=True, context={"request": request}
+    )
+    if serializer.is_valid():
+        updated = serializer.save()
+        return Response(BrandGuidelineSerializer(updated).data)
+    return Response(serializer.errors, status=400)
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def uploaded_campaigns_list(request: Request) -> Response:
@@ -184,16 +209,19 @@ def uploaded_campaigns_list(request: Request) -> Response:
     return Response(serializer.data)
 
 
-@api_view(["GET"])
+@api_view(["GET", "DELETE"])
 @permission_classes([IsAuthenticated])
 def uploaded_campaign_detail(request: Request, upload_id: int) -> Response:
     """
-    Returns a single upload with parsed_campaigns for the authenticated user.
+    Returns or deletes a single upload for the authenticated user.
     Endpoint: uploaded-campaigns/<upload_id>/
     """
     upload = UploadedCampaign.objects.filter(id=upload_id, user=request.user).first()
     if not upload:
         return Response({"error": "Not found"}, status=404)
+    if request.method == "DELETE":
+        upload.delete()
+        return Response(status=204)
     return Response(UploadedCampaignSerializer(upload).data)
 
 

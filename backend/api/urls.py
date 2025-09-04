@@ -3,6 +3,7 @@ from . import views
 from .views import (
     brand_guidelines_list,
     brand_guidelines_create,
+    brand_guideline_detail,
     uploaded_campaigns_list,
     upload_campaign_file,
     uploaded_campaign_detail,
@@ -31,6 +32,7 @@ urlpatterns = [
         name="brand_guidelines_create",
     ),
     path("brand-guidelines/create", brand_guidelines_create),
+    path("brand-guidelines/<int:guideline_id>/", brand_guideline_detail, name="brand_guideline_detail"),
     # Uploaded campaign files
     path("uploaded-campaigns/", uploaded_campaigns_list, name="uploaded_campaigns_list"),
     path("uploaded-campaigns", uploaded_campaigns_list),

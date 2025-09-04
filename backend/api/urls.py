@@ -5,6 +5,7 @@ from .views import (
     brand_guidelines_create,
     uploaded_campaigns_list,
     upload_campaign_file,
+    uploaded_campaign_detail,
 )
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
@@ -39,4 +40,5 @@ urlpatterns = [
         name="upload_campaign_file",
     ),
     path("uploaded-campaigns/upload", upload_campaign_file),
+    path("uploaded-campaigns/<int:upload_id>/", uploaded_campaign_detail, name="uploaded_campaign_detail"),
 ]

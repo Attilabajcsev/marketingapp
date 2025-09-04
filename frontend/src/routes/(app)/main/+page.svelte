@@ -40,6 +40,19 @@
 	let uploadsLoading: boolean = $state(false);
 	let uploadBusy: boolean = $state(false);
 	let fileToUpload: File | null = $state(null);
+	let showUploadModal: boolean = $state(false);
+	let selectedUpload: (UploadItem & { parsed_campaigns?: { title: string; content: string; meta?: Record<string, unknown> }[] }) | null = $state(null);
+
+	async function openUploadDetail(id: number) {
+		try {
+			const res = await fetch(`api/uploaded-campaigns/${id}/`, { credentials: 'include' });
+			if (!res.ok) return;
+			selectedUpload = await res.json();
+			showUploadModal = true;
+		} catch (e) {
+			console.error(e);
+		}
+	}
 
 	async function getdata() {
 		loading = true;
@@ -293,7 +306,7 @@
 								<tbody>
 									{#each uploads as u}
 										<tr>
-											<td>{u.filename}</td>
+											<td><a class="link link-primary" href="#" onclick={() => openUploadDetail(u.id)}>{u.filename}</a></td>
 											<td class="uppercase text-xs opacity-70">{u.file_type}</td>
 											<td>{new Date(u.upload_date).toLocaleString()}</td>
 											<td>{u.campaign_count}</td>
@@ -353,3 +366,34 @@
 		</div>
 	</div>
 </div>
+
+{#if showUploadModal && selectedUpload}
+<dialog class="modal modal-open">
+	<div class="modal-box max-w-3xl">
+		<h3 class="font-bold text-lg mb-2">{selectedUpload.filename}</h3>
+		<p class="text-sm opacity-70 mb-4">
+			Type: <span class="uppercase">{selectedUpload.file_type}</span> • Uploaded: {new Date(selectedUpload.upload_date).toLocaleString()} • Parsed: {selectedUpload.campaign_count}
+		</p>
+		<div class="space-y-3 max-h-96 overflow-y-auto">
+			{#if selectedUpload.parsed_campaigns?.length}
+				{#each selectedUpload.parsed_campaigns as pc, i}
+					<div class="card bg-base-200">
+						<div class="card-body">
+							<h4 class="card-title">{i + 1}. {pc.title}</h4>
+							<p class="whitespace-pre-wrap">{pc.content?.slice(0, 200)}{pc.content && pc.content.length > 200 ? '…' : ''}</p>
+						</div>
+					</div>
+				{/each}
+			{:else}
+				<p class="opacity-70">No parsed campaigns found.</p>
+			{/if}
+		</div>
+		<div class="modal-action">
+			<button class="btn" onclick={() => { showUploadModal = false; selectedUpload = null; }}>Close</button>
+		</div>
+	</div>
+	<form method="dialog" class="modal-backdrop">
+		<button onclick={() => { showUploadModal = false; selectedUpload = null; }}>close</button>
+	</form>
+</dialog>
+{/if}

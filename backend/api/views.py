@@ -184,6 +184,19 @@ def uploaded_campaigns_list(request: Request) -> Response:
     return Response(serializer.data)
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def uploaded_campaign_detail(request: Request, upload_id: int) -> Response:
+    """
+    Returns a single upload with parsed_campaigns for the authenticated user.
+    Endpoint: uploaded-campaigns/<upload_id>/
+    """
+    upload = UploadedCampaign.objects.filter(id=upload_id, user=request.user).first()
+    if not upload:
+        return Response({"error": "Not found"}, status=404)
+    return Response(UploadedCampaignSerializer(upload).data)
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def upload_campaign_file(request: Request) -> Response:

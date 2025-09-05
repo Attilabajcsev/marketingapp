@@ -5,8 +5,9 @@ from .serializers import (
     OAuthUserRegistrationSerializer,
     BrandGuidelineSerializer,
     UploadedCampaignSerializer,
+    LinkedInScrapeSerializer,
 )
-from .models import BrandGuideline, UploadedCampaign
+from .models import BrandGuideline, UploadedCampaign, LinkedInScrape
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -18,6 +19,9 @@ from rest_framework import status
 import csv as pycsv
 import json
 from typing import Any
+import requests as http_requests
+import re
+import html as html_lib
 
 
 @api_view(["POST"])
@@ -332,3 +336,57 @@ def upload_campaign_file(request: Request) -> Response:
         campaign_count=len(parsed),
     )
     return Response(UploadedCampaignSerializer(created).data, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def linkedin_scrape(request: Request) -> Response:
+    """Fetch a LinkedIn company URL and store raw content for the user."""
+    data = request.data or {}
+    url = (data.get("url") or "").strip()
+    if not url or "linkedin.com" not in url:
+        return Response({"error": "Please provide a valid LinkedIn URL."}, status=400)
+
+    try:
+        resp = http_requests.get(
+            url,
+            timeout=10,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            },
+        )
+        if not resp.ok:
+            return Response({"error": f"Failed to fetch page: {resp.status_code}"}, status=400)
+        html = resp.text or ""
+    except Exception as e:
+        return Response({"error": str(e)}, status=400)
+
+    # Heuristic HTML -> text extraction (no external parsers to keep deps minimal)
+    def _extract_visible_text(doc: str) -> str:
+        if not doc:
+            return ""
+        # drop scripts/styles
+        doc = re.sub(r"<script[\s\S]*?</script>", " ", doc, flags=re.IGNORECASE)
+        doc = re.sub(r"<style[\s\S]*?</style>", " ", doc, flags=re.IGNORECASE)
+        # remove tags
+        doc = re.sub(r"<[^>]+>", " ", doc)
+        # unescape entities
+        doc = html_lib.unescape(doc)
+        # collapse whitespace
+        doc = re.sub(r"\s+", " ", doc).strip()
+        return doc
+
+    text = _extract_visible_text(html)
+
+    # If we clearly hit a login wall, surface a helpful error instead
+    if re.search(r"LinkedIn\s+Login|Sign in \| LinkedIn", text, flags=re.IGNORECASE):
+        return Response({
+            "error": "LinkedIn returned a login page; content could not be scraped. Try a public About page or paste text manually.",
+        }, status=400)
+
+    # Keep a reasonable cap
+    if len(text) > 20000:
+        text = text[:20000]
+
+    obj = LinkedInScrape.objects.create(user=request.user, url=url, content=text)
+    return Response(LinkedInScrapeSerializer(obj).data, status=201)

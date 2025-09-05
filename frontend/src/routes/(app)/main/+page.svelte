@@ -62,6 +62,42 @@
 	let userPrompt: string = $state('');
 	let outputText: string = $state('');
 	let generating: boolean = $state(false);
+	let copySuccess: boolean = $state(false);
+	let hasOutput: boolean = $derived(!!outputText && outputText.trim().length > 0);
+	let linkedinUrl: string = $state('');
+	let linkedinLoading: boolean = $state(false);
+	let linkedinLoaded: boolean = $state(false);
+	let usedLinkedIn: boolean = $state(false);
+	let showLinkedinPreview: boolean = $state(false);
+	let linkedinPreview: string = $state('');
+
+	async function copyOutput() {
+		if (!hasOutput) return;
+		try {
+			await navigator.clipboard.writeText(outputText);
+			copySuccess = true;
+			setTimeout(() => (copySuccess = false), 1500);
+		} catch (e) {
+			console.error(e);
+		}
+	}
+
+	function downloadOutput() {
+		if (!hasOutput) return;
+		try {
+			const blob = new Blob([outputText], { type: 'text/plain;charset=utf-8' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = 'generated-content.txt';
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			URL.revokeObjectURL(url);
+		} catch (e) {
+			console.error(e);
+		}
+	}
 
 	// Vector search state
 	type SearchItem = { id: number; text: string; source_type: string; source_id: number };
@@ -255,11 +291,35 @@
 			}
 			const data = await res.json();
 			outputText = data.reply ?? '';
+			usedLinkedIn = Boolean(data.used_linkedin);
+			linkedinPreview = String(data.linkedin_context_preview || '');
 		} catch (e) {
 			console.error(e);
 			outputText = 'Error generating content.';
 		} finally {
 			generating = false;
+		}
+	}
+
+	async function scanLinkedIn() {
+		const url = linkedinUrl.trim();
+		if (!url) return;
+		linkedinLoading = true;
+		linkedinLoaded = false;
+		try {
+			const res = await fetch('api/linkedin/scrape/', {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ url })
+			});
+			if (!res.ok) return;
+			await res.json();
+			linkedinLoaded = true;
+		} catch (e) {
+			console.error(e);
+		} finally {
+			linkedinLoading = false;
 		}
 	}
 
@@ -324,15 +384,28 @@
 				<div class="rounded-md border border-gray-200 bg-white p-4">
 					<div class="mb-2 flex items-center justify-between">
 						<h3 class="font-medium">Links</h3>
-						<span class="text-sm text-gray-500">No data yet</span>
+						<span class="text-sm {linkedinLoaded ? 'text-green-600' : 'text-gray-500'}">{linkedinLoaded ? '✓ LinkedIn loaded' : 'No data yet'}</span>
 					</div>
 					<div class="space-y-2">
 						<input class="input input-bordered w-full" type="url" placeholder="www.example.com" />
 						<input class="input input-bordered w-full" type="url" placeholder="www.trustpilot/example.com" />
-						<input class="input input-bordered w-full" type="url" placeholder="www.linkedin.com/company/example" />
-						<div class="flex justify-end">
-							<button class="btn btn-disabled" disabled>Scan All (Coming Soon)</button>
+						<div class="flex gap-2">
+							<input class="input input-bordered w-full" type="url" placeholder="www.linkedin.com/company/example" bind:value={linkedinUrl} />
+							<button class="btn btn-neutral" onclick={scanLinkedIn} disabled={linkedinLoading || !linkedinUrl}>
+								{#if linkedinLoading}
+									<span class="loading loading-spinner loading-sm"></span>
+									Scanning
+								{:else}
+									Scan LinkedIn
+								{/if}
+							</button>
 						</div>
+						{#if usedLinkedIn}
+							<div class="flex items-center gap-2">
+								<p class="text-xs text-green-600">Using LinkedIn content in generation</p>
+								<button class="btn btn-xs" onclick={() => (showLinkedinPreview = true)}>Preview</button>
+							</div>
+						{/if}
 					</div>
 				</div>
 
@@ -442,9 +515,12 @@
 				<div class="rounded-md border border-gray-200 bg-white p-4">
 					<h2 class="mb-2 text-lg font-semibold">Your generated content</h2>
 					<textarea class="textarea textarea-bordered w-full min-h-64" placeholder="Output will appear here…" bind:value={outputText} readonly />
-					<div class="mt-2 flex justify-end gap-2">
-						<button class="btn btn-disabled" disabled>Copy</button>
-						<button class="btn btn-disabled" disabled>Download</button>
+					<div class="mt-2 flex items-center justify-end gap-2">
+						{#if copySuccess}
+							<span class="text-xs text-green-600">Copied!</span>
+						{/if}
+						<button class="btn" onclick={copyOutput} disabled={!hasOutput}>Copy</button>
+						<button class="btn" onclick={downloadOutput} disabled={!hasOutput}>Download</button>
 					</div>
 				</div>
 			</div>
@@ -495,6 +571,24 @@
 	</div>
 	<form method="dialog" class="modal-backdrop">
 		<button onclick={() => { showGuidelineModal = false; selectedGuideline = null; }}>close</button>
+	</form>
+</dialog>
+{/if}
+
+{#if showLinkedinPreview && usedLinkedIn}
+<dialog class="modal modal-open">
+	<div class="modal-box max-w-2xl">
+		<h3 class="font-bold text-lg mb-2">LinkedIn context preview</h3>
+		<p class="text-xs opacity-70 mb-3">First 800 characters shown.</p>
+		<div class="max-h-96 overflow-y-auto">
+			<p class="whitespace-pre-wrap text-sm">{linkedinPreview || 'No preview available.'}</p>
+		</div>
+		<div class="modal-action">
+			<button class="btn" onclick={() => (showLinkedinPreview = false)}>Close</button>
+		</div>
+	</div>
+	<form method="dialog" class="modal-backdrop">
+		<button onclick={() => (showLinkedinPreview = false)}>close</button>
 	</form>
 </dialog>
 {/if}

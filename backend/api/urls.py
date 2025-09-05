@@ -7,6 +7,7 @@ from .views import (
     uploaded_campaigns_list,
     upload_campaign_file,
     uploaded_campaign_detail,
+    linkedin_scrape,
 )
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
@@ -43,4 +44,6 @@ urlpatterns = [
     ),
     path("uploaded-campaigns/upload", upload_campaign_file),
     path("uploaded-campaigns/<int:upload_id>/", uploaded_campaign_detail, name="uploaded_campaign_detail"),
+    # LinkedIn scraping
+    path("linkedin/scrape/", linkedin_scrape, name="linkedin_scrape"),
 ]

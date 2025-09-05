@@ -54,3 +54,23 @@ class UploadedCampaign(models.Model):
 
     class Meta:
         ordering = ["-upload_date", "-id"]
+
+
+class LinkedInScrape(models.Model):
+    """Stores raw scraped LinkedIn page text for a user and URL."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="linkedin_scrapes",
+    )
+    url = models.URLField(max_length=500)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["user", "url"]),
+            models.Index(fields=["user", "created_at"]),
+        ]

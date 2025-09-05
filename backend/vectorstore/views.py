@@ -10,6 +10,7 @@ from django.conf import settings
 import requests
 from api.models import BrandGuideline
 from .prompt_template import build_generation_messages
+from api.models import LinkedInScrape
 
 
 @api_view(["POST"])
@@ -152,6 +153,21 @@ def generate(request: Request) -> Response:
                     "text": ch["text"],
                 })
 
+    # Include latest LinkedIn scrape content (if any) as additional example context
+    linkedin_texts = list(
+        LinkedInScrape.objects.filter(user=request.user)
+        .order_by("-created_at")
+        .values_list("content", flat=True)[:1]
+    )
+    # Trim LinkedIn content to avoid overly large prompts
+    linkedin_texts = [txt[:4000] for txt in linkedin_texts if isinstance(txt, str)]
+
+    used_linkedin = bool(linkedin_texts)
+    linkedin_context_preview = (linkedin_texts[0][:800] if used_linkedin else "")
+    if used_linkedin:
+        # Prepend LinkedIn content to similar_texts used as extra context
+        similar_texts = linkedin_texts + similar_texts
+
     messages = build_generation_messages(
         user_request=prompt,
         tone_guidelines=tone,
@@ -181,11 +197,11 @@ def generate(request: Request) -> Response:
             if resp.ok:
                 data = resp.json()
                 text = data["choices"][0]["message"]["content"]
-                return Response({"reply": text, "similar_examples": similar_examples})
+                return Response({"reply": text, "similar_examples": similar_examples, "used_linkedin": used_linkedin, "linkedin_context_preview": linkedin_context_preview})
             else:
-                return Response({"reply": f"LLM error, echoing: {prompt}", "error": resp.text, "similar_examples": similar_examples})
+                return Response({"reply": f"LLM error, echoing: {prompt}", "error": resp.text, "similar_examples": similar_examples, "used_linkedin": used_linkedin, "linkedin_context_preview": linkedin_context_preview})
         except Exception as e:
-            return Response({"reply": f"LLM error, echoing: {prompt}", "error": str(e), "similar_examples": similar_examples})
+            return Response({"reply": f"LLM error, echoing: {prompt}", "error": str(e), "similar_examples": similar_examples, "used_linkedin": used_linkedin, "linkedin_context_preview": linkedin_context_preview})
 
     # Fallback echo uses the constructed template context minimally
     synthetic = "\n\n".join([
@@ -196,6 +212,6 @@ def generate(request: Request) -> Response:
         "[Similar] " + " | ".join(similar_texts) if similar_texts else "",
         "[Request] " + prompt,
     ])
-    return Response({"reply": synthetic.strip(), "similar_examples": similar_examples})
+    return Response({"reply": synthetic.strip(), "similar_examples": similar_examples, "used_linkedin": used_linkedin, "linkedin_context_preview": linkedin_context_preview})
 
 

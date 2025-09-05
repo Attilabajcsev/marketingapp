@@ -243,11 +243,11 @@
 		generating = true;
 		outputText = '';
 		try {
-			const res = await fetch('api/vectorstore/chat/', {
+			const res = await fetch('api/vectorstore/generate/', {
 				method: 'POST',
 				credentials: 'include',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ prompt })
+				body: JSON.stringify({ prompt, top_k: 5 })
 			});
 			if (!res.ok) {
 				outputText = 'Error generating content.';

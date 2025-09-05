@@ -58,8 +58,10 @@
 	let newContent: string = $state('');
 	let newType: string = $state('tone');
 
-	// Simple prompt placeholder
+	// Prompt and output state
 	let userPrompt: string = $state('');
+	let outputText: string = $state('');
+	let generating: boolean = $state(false);
 
 	// Vector search state
 	type SearchItem = { id: number; text: string; source_type: string; source_id: number };
@@ -139,6 +141,10 @@
 	let showUploadModal: boolean = $state(false);
 	let selectedUpload: (UploadItem & { parsed_campaigns?: { title: string; content: string; meta?: Record<string, unknown> }[] }) | null = $state(null);
 
+	// Minimal guideline preview modal state
+	let showGuidelineModal: boolean = $state(false);
+	let selectedGuideline: Campaign | null = $state(null);
+
 	async function openUploadDetail(id: number) {
 		try {
 			const res = await fetch(`api/uploaded-campaigns/${id}/`, { credentials: 'include' });
@@ -148,6 +154,11 @@
 		} catch (e) {
 			console.error(e);
 		}
+	}
+
+	function openGuideline(c: Campaign) {
+		selectedGuideline = c;
+		showGuidelineModal = true;
 	}
 
 	async function getdata() {
@@ -226,10 +237,30 @@
 		}
 	}
 
-	function submitPrompt() {
-		if (!userPrompt.trim()) return;
-		// Placeholder action
-		console.log('User prompt submitted:', userPrompt);
+	async function submitPrompt() {
+		const prompt = userPrompt.trim();
+		if (!prompt || generating) return;
+		generating = true;
+		outputText = '';
+		try {
+			const res = await fetch('api/vectorstore/chat/', {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ prompt })
+			});
+			if (!res.ok) {
+				outputText = 'Error generating content.';
+				return;
+			}
+			const data = await res.json();
+			outputText = data.reply ?? '';
+		} catch (e) {
+			console.error(e);
+			outputText = 'Error generating content.';
+		} finally {
+			generating = false;
+		}
 	}
 
 	async function loadUploads() {
@@ -278,272 +309,146 @@
 	onMount(loadUploads);
 </script>
 
-<div class="bg-base-neutral relative min-h-[90vh] p-6">
-	<div class="mb-6 flex flex-col items-center justify-center">
-		{#if username}
-			<h1 class="mb-2 p-2 text-3xl font-semibold">Welcome {username}!</h1>
-		{:else}
-			<h1 class="mb-2 p-2 text-3xl font-semibold">You are now logged in!</h1>
-			<p>Try fetching your user data:</p>
-		{/if}
-		<div class="mt-2">
-			{#if username}
-				<button class="btn btn-neutral min-w-40" onclick={() => (username = '')}>Remove name</button>
-			{:else if loading}
-				<button class="btn btn-neutral min-w-40" onclick={getdata}>
-					<span class="loading loading-spinner loading-sm"></span>
-					Getting..
-				</button>
-			{:else}
-				<button class="btn btn-neutral min-w-40" onclick={getdata}>Get name</button>
-			{/if}
-		</div>
-	</div>
+<div class="min-h-screen bg-white p-6">
+	<div class="mx-auto max-w-7xl">
+		<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+			<!-- LEFT COLUMN: Your Sources -->
+			<div class="space-y-4">
+				<div class="rounded-md border border-gray-200 bg-white p-4">
+					<h2 class="mb-1 text-lg font-semibold">Your Sources</h2>
+					<p class="text-sm text-gray-500">Add sources to inform generation.</p>
+				</div>
 
-	{#if errorMessage}
-		<div role="alert" class="alert alert-error mb-4">
-			<button type="button" aria-label="close alert" onclick={() => (errorMessage = null)}>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					class="h-6 w-6 shrink-0 stroke-current"
-					fill="none"
-					viewBox="0 0 24 24"
-				>
-					<path
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="2"
-						d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"
-					/>
-				</svg>
-			</button>
-			<span>{errorMessage}</span>
-		</div>
-	{/if}
 
-	<div class="grid grid-cols-1 gap-6">
-		<!-- Removed tabs: single-page linear layout below -->
-
-		{#if true}
-			<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-				<div class="card bg-base-200">
-					<div class="card-body">
-						<div class="mb-2 flex items-center justify-between">
-							<h2 class="card-title">Your Brand Guidelines</h2>
-							<button class="btn btn-sm" onclick={loadCampaigns} disabled={campaignsLoading}>
-								{#if campaignsLoading}
-									<span class="loading loading-spinner loading-xs"></span>
-									Refreshing
-								{:else}
-									Refresh
-								{/if}
-							</button>
+				<!-- Links card (compact) -->
+				<div class="rounded-md border border-gray-200 bg-white p-4">
+					<div class="mb-2 flex items-center justify-between">
+						<h3 class="font-medium">Links</h3>
+						<span class="text-sm text-gray-500">No data yet</span>
+					</div>
+					<div class="space-y-2">
+						<input class="input input-bordered w-full" type="url" placeholder="www.example.com" />
+						<input class="input input-bordered w-full" type="url" placeholder="www.trustpilot/example.com" />
+						<input class="input input-bordered w-full" type="url" placeholder="www.linkedin.com/company/example" />
+						<div class="flex justify-end">
+							<button class="btn btn-disabled" disabled>Scan All (Coming Soon)</button>
 						</div>
-
-						{#if campaignsLoading}
-							<div class="flex items-center justify-center p-6">
-								<span class="loading loading-spinner loading-lg"></span>
-							</div>
-						{:else if campaigns.length === 0}
-							<p class="opacity-70">No guidelines yet. Create one on the right.</p>
-						{:else}
-							<div class="overflow-x-auto">
-								<table class="table table-zebra w-full">
-									<thead>
-										<tr>
-											<th>Title</th>
-											<th>Type</th>
-											<th>Created</th>
-										</tr>
-									</thead>
-									<tbody>
-										{#each campaigns as c}
-											<tr>
-												<td class="font-medium">
-													{#if editingId === c.id}
-														<input class="input input-sm input-bordered w-full" bind:value={editTitle} />
-													{:else}
-														{c.title}
-													{/if}
-												</td>
-												<td class="uppercase text-xs opacity-70">
-													{#if editingId === c.id}
-														<select class="select select-bordered select-sm" bind:value={editType}>
-															<option value="tone">tone</option>
-															<option value="terminology">terminology</option>
-															<option value="style">style</option>
-															<option value="rules">rules</option>
-														</select>
-													{:else}
-														{c.guideline_type}
-													{/if}
-												</td>
-												<td>
-													{#if editingId === c.id}
-														<textarea class="textarea textarea-bordered textarea-sm w-full" bind:value={editContent} />
-													{:else}
-														{new Date(c.uploaded_at).toLocaleString()}
-													{/if}
-												</td>
-												<td class="w-44 text-right">
-													{#if editingId === c.id}
-														<button class="btn btn-xs btn-neutral mr-2" onclick={saveEdit}>Save</button>
-														<button class="btn btn-xs" onclick={() => (editingId = null)}>Cancel</button>
-													{:else}
-														<button class="btn btn-xs mr-2" onclick={() => startEdit(c)}>Edit</button>
-														<button class="btn btn-xs btn-error" onclick={() => deleteGuideline(c.id)}>Delete</button>
-													{/if}
-												</td>
-											</tr>
-										{/each}
-									</tbody>
-								</table>
-							</div>
-						{/if}
 					</div>
 				</div>
 
-				<div class="card bg-base-200">
-					<div class="card-body gap-3">
-						<h2 class="card-title">Create Guideline</h2>
-						<input class="input input-bordered" type="text" placeholder="Guideline title" bind:value={newTitle} />
-						<select class="select select-bordered" bind:value={newType}>
+				<!-- Upload Old Content card -->
+				<div class="rounded-md border border-gray-200 bg-white p-4">
+					<div class="mb-2 flex items-center justify-between">
+						<h3 class="font-medium">Upload Old Content</h3>
+						<span class="text-sm {uploads.length > 0 ? 'text-green-600' : 'text-gray-500'}">
+							{uploads.length > 0 ? `✓ ${uploads.length} items loaded` : 'No data yet'}
+						</span>
+					</div>
+					<div class="flex items-center gap-2">
+						<input class="file-input file-input-bordered w-full" type="file" accept=".csv,.txt,.json" onchange={(e: Event) => { const t = e.target as HTMLInputElement; fileToUpload = (t.files && t.files[0]) || null; }} />
+						<button class="btn btn-neutral" onclick={uploadFile} disabled={uploadBusy || !fileToUpload}>
+							{#if uploadBusy}
+								<span class="loading loading-spinner loading-sm"></span>
+								Uploading
+							{:else}
+								Upload
+							{/if}
+						</button>
+					</div>
+					{#if uploadsLoading}
+						<p class="mt-2 text-sm text-gray-500">Loading uploads…</p>
+					{/if}
+					{#if uploads.length > 0}
+						<div class="mt-2 space-y-1">
+							{#each uploads.slice(0, 3) as u}
+								<div class="flex items-center justify-between rounded border border-gray-200 p-2">
+									<p class="text-sm">{u.filename}</p>
+									<button class="btn btn-xs" onclick={() => openUploadDetail(u.id)}>View</button>
+								</div>
+							{/each}
+							{#if uploads.length > 3}
+								<p class="text-xs text-gray-500">and {uploads.length - 3} more…</p>
+							{/if}
+						</div>
+					{/if}
+				</div>
+
+				<!-- Brand Guidelines card -->
+				<div class="rounded-md border border-gray-200 bg-white p-4">
+					<div class="mb-2 flex items-center justify-between">
+						<h3 class="font-medium">Brand Guidelines</h3>
+						<span class="text-sm {campaigns.length > 0 ? 'text-green-600' : 'text-gray-500'}">
+							{campaigns.length > 0 ? `✓ ${campaigns.length} items loaded` : 'No data yet'}
+						</span>
+					</div>
+					<div class="space-y-2">
+						<input class="input input-bordered w-full" type="text" placeholder="Guideline title" bind:value={newTitle} />
+						<select class="select select-bordered w-full" bind:value={newType}>
 							<option value="tone">Tone of Voice</option>
 							<option value="terminology">Company Terminology</option>
 							<option value="style">Writing Style</option>
 							<option value="rules">Content Rules</option>
 						</select>
-						<textarea class="textarea textarea-bordered min-h-28" placeholder="Guideline content (tone, rules, etc.)" bind:value={newContent} />
-						<button class="btn btn-neutral" onclick={createCampaign} disabled={createLoading}>
-							{#if createLoading}
-								<span class="loading loading-spinner loading-sm"></span>
-								Creating
-							{:else}
-								Create
-							{/if}
-						</button>
-					</div>
-				</div>
-			</div>
-		{/if}
-
-		{#if true}
-			<div class="card bg-base-200">
-				<div class="card-body gap-3">
-					<div class="flex items-center justify-between">
-						<h2 class="card-title">Upload Past Campaigns</h2>
-						<button class="btn btn-sm" onclick={loadUploads} disabled={uploadsLoading}>
-							{#if uploadsLoading}
-								<span class="loading loading-spinner loading-xs"></span>
-								Refreshing
-							{:else}
-								Refresh
-							{/if}
-						</button>
-					</div>
-					<input class="file-input file-input-bordered w-full" type="file" accept=".csv,.txt,.json" onchange={(e: Event) => { const t = e.target as HTMLInputElement; fileToUpload = (t.files && t.files[0]) || null; }} />
-					<button class="btn btn-neutral" onclick={uploadFile} disabled={uploadBusy || !fileToUpload}>
-						{#if uploadBusy}
-							<span class="loading loading-spinner loading-sm"></span>
-							Uploading
-						{:else}
-							Upload
-						{/if}
-					</button>
-
-					{#if uploads.length > 0}
-						<div class="overflow-x-auto">
-							<table class="table w-full">
-								<thead>
-									<tr>
-										<th>Filename</th>
-										<th>Type</th>
-										<th>Uploaded</th>
-										<th># Campaigns</th>
-									</tr>
-								</thead>
-								<tbody>
-									{#each uploads as u}
-										<tr>
-											<td><a class="link link-primary" href="#" onclick={() => openUploadDetail(u.id)}>{u.filename}</a></td>
-											<td class="uppercase text-xs opacity-70">{u.file_type}</td>
-											<td>{new Date(u.upload_date).toLocaleString()}</td>
-											<td class="flex items-center gap-2">
-												<span>{u.campaign_count}</span>
-												<button class="btn btn-xs btn-error ml-auto" onclick={() => deleteUpload(u.id)}>Delete</button>
-											</td>
-										</tr>
-									{/each}
-								</tbody>
-							</table>
+						<textarea class="textarea textarea-bordered w-full min-h-24" placeholder="Guideline content" bind:value={newContent} />
+						<div class="flex justify-end">
+							<button class="btn btn-neutral" onclick={createCampaign} disabled={createLoading}>
+								{#if createLoading}
+									<span class="loading loading-spinner loading-sm"></span>
+									Add
+								{:else}
+									Add
+								{/if}
+							</button>
 						</div>
-					{:else}
-						<p class="opacity-70">No uploads yet. Upload a CSV/TXT/JSON file.</p>
-					{/if}
-				</div>
-			</div>
-		{/if}
-
-		{#if true}
-			<div class="card bg-base-200">
-				<div class="card-body gap-3">
-					<h2 class="card-title">Search Indexed Content</h2>
-					<div class="flex gap-2">
-						<input class="input input-bordered flex-1" type="text" placeholder="Search query" bind:value={searchQuery} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') runSearch(); }} />
-						<button class="btn btn-neutral" onclick={runSearch} disabled={searchLoading}>
-							{#if searchLoading}
-								<span class="loading loading-spinner loading-sm"></span>
-								Searching
-							{:else}
-								Search
-							{/if}
-						</button>
 					</div>
-
-					{#if searchResults.length > 0}
-						<div class="space-y-2 max-h-80 overflow-y-auto">
-							{#each searchResults as r, i}
-								<div class="card bg-base-100">
-									<div class="card-body p-4">
-										<p class="text-xs opacity-70 mb-1">{i + 1}. Source: {r.source_type}#{r.source_id}</p>
-										<p class="whitespace-pre-wrap">{r.text}</p>
+					{#if campaignsLoading}
+						<p class="mt-2 text-sm text-gray-500">Loading guidelines…</p>
+					{:else if campaigns.length > 0}
+						<div class="mt-3 space-y-1">
+							{#each campaigns.slice(0, 3) as c}
+								<div class="flex items-center justify-between rounded border border-gray-200 p-2">
+									<div>
+										<p class="text-sm font-medium">{c.title}</p>
+										<p class="text-xs text-gray-500">{c.guideline_type} • {new Date(c.uploaded_at).toLocaleDateString()}</p>
 									</div>
+									<button class="btn btn-xs" onclick={() => openGuideline(c)}>View</button>
 								</div>
 							{/each}
-						</div>
-					{:else}
-						<p class="opacity-70">Enter a query to search your indexed guidelines and uploads.</p>
-					{/if}
-				</div>
-			</div>
-		{/if}
-
-		{#if true}
-			<div class="card bg-base-200">
-				<div class="card-body gap-3">
-					<h2 class="card-title">Prompt</h2>
-					<textarea class="textarea textarea-bordered min-h-28" placeholder="Describe what you want to generate..." bind:value={userPrompt} />
-					<button class="btn" onclick={submitPrompt}>Submit</button>
-
-					<div class="divider" />
-					<h3 class="font-semibold">Chat (LLM)</h3>
-					<input class="input input-bordered w-full" type="text" placeholder="Ask something..." bind:value={chatPrompt} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') runChat(); }} />
-					<button class="btn btn-neutral" onclick={runChat} disabled={chatLoading}>
-						{#if chatLoading}
-							<span class="loading loading-spinner loading-sm"></span>
-							Sending
-						{:else}
-							Send
-						{/if}
-					</button>
-					{#if chatReply}
-						<div class="alert mt-2">
-							<span>{chatReply}</span>
+							{#if campaigns.length > 3}
+								<p class="text-xs text-gray-500">and {campaigns.length - 3} more…</p>
+							{/if}
 						</div>
 					{/if}
 				</div>
 			</div>
-		{/if}
+
+			<!-- RIGHT COLUMN: Prompt and Output -->
+			<div class="space-y-4">
+				<div class="rounded-md border border-gray-200 bg-white p-4">
+					<h2 class="mb-2 text-lg font-semibold">Write your prompt:</h2>
+					<textarea class="textarea textarea-bordered w-full min-h-48" placeholder="Describe what you want to generate…" bind:value={userPrompt} />
+					<div class="mt-2 flex justify-end">
+						<button class="btn btn-neutral" onclick={submitPrompt} disabled={generating}>
+							{#if generating}
+								<span class="loading loading-spinner loading-sm"></span>
+								Generating
+							{:else}
+								Generate
+							{/if}
+						</button>
+					</div>
+				</div>
+
+				<div class="rounded-md border border-gray-200 bg-white p-4">
+					<h2 class="mb-2 text-lg font-semibold">Your generated content</h2>
+					<textarea class="textarea textarea-bordered w-full min-h-64" placeholder="Output will appear here…" bind:value={outputText} readonly />
+					<div class="mt-2 flex justify-end gap-2">
+						<button class="btn btn-disabled" disabled>Copy</button>
+						<button class="btn btn-disabled" disabled>Download</button>
+					</div>
+				</div>
+			</div>
+		</div>
 	</div>
 </div>
 
@@ -557,11 +462,9 @@
 		<div class="space-y-3 max-h-96 overflow-y-auto">
 			{#if selectedUpload.parsed_campaigns?.length}
 				{#each selectedUpload.parsed_campaigns as pc, i}
-					<div class="card bg-base-200">
-						<div class="card-body">
-							<h4 class="card-title">{i + 1}. {pc.title}</h4>
-							<p class="whitespace-pre-wrap">{pc.content?.slice(0, 200)}{pc.content && pc.content.length > 200 ? '…' : ''}</p>
-						</div>
+					<div class="rounded-md border border-gray-200 bg-white p-3">
+						<p class="text-sm font-medium">{i + 1}. {pc.title}</p>
+						<p class="text-sm text-gray-600 whitespace-pre-wrap">{pc.content}</p>
 					</div>
 				{/each}
 			{:else}
@@ -574,6 +477,24 @@
 	</div>
 	<form method="dialog" class="modal-backdrop">
 		<button onclick={() => { showUploadModal = false; selectedUpload = null; }}>close</button>
+	</form>
+</dialog>
+{/if}
+
+{#if showGuidelineModal && selectedGuideline}
+<dialog class="modal modal-open">
+	<div class="modal-box max-w-2xl">
+		<h3 class="font-bold text-lg mb-2">{selectedGuideline.title}</h3>
+		<p class="text-sm opacity-70 mb-4">Type: {selectedGuideline.guideline_type} • {new Date(selectedGuideline.uploaded_at).toLocaleDateString()}</p>
+		<div class="max-h-96 overflow-y-auto">
+			<p class="whitespace-pre-wrap text-sm">{selectedGuideline.content}</p>
+		</div>
+		<div class="modal-action">
+			<button class="btn" onclick={() => { showGuidelineModal = false; selectedGuideline = null; }}>Close</button>
+		</div>
+	</div>
+	<form method="dialog" class="modal-backdrop">
+		<button onclick={() => { showGuidelineModal = false; selectedGuideline = null; }}>close</button>
 	</form>
 </dialog>
 {/if}

@@ -91,6 +91,39 @@
 		}
 	}
 
+	// Chat (LLM) state
+	let chatPrompt: string = $state('');
+	let chatLoading: boolean = $state(false);
+	let chatReply: string = $state('');
+
+	async function runChat() {
+		if (!chatPrompt.trim()) return;
+		chatLoading = true;
+		chatReply = '';
+		try {
+			const res = await fetch('api/vectorstore/chat/', {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ prompt: chatPrompt.trim() })
+			});
+			if (!res.ok) {
+				chatReply = 'Error calling chat endpoint';
+				return;
+			}
+			const data = await res.json();
+			chatReply = data.reply ?? '';
+		} catch (e) {
+			console.error(e);
+			chatReply = 'Error calling chat endpoint';
+		} finally {
+			chatLoading = false;
+		}
+	}
+
+	// Simple tabbed layout to declutter the page
+	let activeTab: 'guidelines' | 'uploads' | 'search' | 'chat' = $state('guidelines');
+
 	// Uploads state
 	type UploadItem = {
 		id: number;
@@ -288,88 +321,113 @@
 		</div>
 	{/if}
 
-	<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-		<!-- Campaigns list -->
-		<div class="card bg-base-200">
-			<div class="card-body">
-				<div class="mb-2 flex items-center justify-between">
-					<h2 class="card-title">Your Brand Guidelines</h2>
-					<button class="btn btn-sm" onclick={loadCampaigns} disabled={campaignsLoading}>
+	<div class="grid grid-cols-1 gap-6">
+		<!-- Removed tabs: single-page linear layout below -->
+
+		{#if true}
+			<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+				<div class="card bg-base-200">
+					<div class="card-body">
+						<div class="mb-2 flex items-center justify-between">
+							<h2 class="card-title">Your Brand Guidelines</h2>
+							<button class="btn btn-sm" onclick={loadCampaigns} disabled={campaignsLoading}>
+								{#if campaignsLoading}
+									<span class="loading loading-spinner loading-xs"></span>
+									Refreshing
+								{:else}
+									Refresh
+								{/if}
+							</button>
+						</div>
+
 						{#if campaignsLoading}
-							<span class="loading loading-spinner loading-xs"></span>
-							Refreshing
+							<div class="flex items-center justify-center p-6">
+								<span class="loading loading-spinner loading-lg"></span>
+							</div>
+						{:else if campaigns.length === 0}
+							<p class="opacity-70">No guidelines yet. Create one on the right.</p>
 						{:else}
-							Refresh
+							<div class="overflow-x-auto">
+								<table class="table table-zebra w-full">
+									<thead>
+										<tr>
+											<th>Title</th>
+											<th>Type</th>
+											<th>Created</th>
+										</tr>
+									</thead>
+									<tbody>
+										{#each campaigns as c}
+											<tr>
+												<td class="font-medium">
+													{#if editingId === c.id}
+														<input class="input input-sm input-bordered w-full" bind:value={editTitle} />
+													{:else}
+														{c.title}
+													{/if}
+												</td>
+												<td class="uppercase text-xs opacity-70">
+													{#if editingId === c.id}
+														<select class="select select-bordered select-sm" bind:value={editType}>
+															<option value="tone">tone</option>
+															<option value="terminology">terminology</option>
+															<option value="style">style</option>
+															<option value="rules">rules</option>
+														</select>
+													{:else}
+														{c.guideline_type}
+													{/if}
+												</td>
+												<td>
+													{#if editingId === c.id}
+														<textarea class="textarea textarea-bordered textarea-sm w-full" bind:value={editContent} />
+													{:else}
+														{new Date(c.uploaded_at).toLocaleString()}
+													{/if}
+												</td>
+												<td class="w-44 text-right">
+													{#if editingId === c.id}
+														<button class="btn btn-xs btn-neutral mr-2" onclick={saveEdit}>Save</button>
+														<button class="btn btn-xs" onclick={() => (editingId = null)}>Cancel</button>
+													{:else}
+														<button class="btn btn-xs mr-2" onclick={() => startEdit(c)}>Edit</button>
+														<button class="btn btn-xs btn-error" onclick={() => deleteGuideline(c.id)}>Delete</button>
+													{/if}
+												</td>
+											</tr>
+										{/each}
+									</tbody>
+								</table>
+							</div>
 						{/if}
-					</button>
+					</div>
 				</div>
 
-				{#if campaignsLoading}
-					<div class="flex items-center justify-center p-6">
-						<span class="loading loading-spinner loading-lg"></span>
+				<div class="card bg-base-200">
+					<div class="card-body gap-3">
+						<h2 class="card-title">Create Guideline</h2>
+						<input class="input input-bordered" type="text" placeholder="Guideline title" bind:value={newTitle} />
+						<select class="select select-bordered" bind:value={newType}>
+							<option value="tone">Tone of Voice</option>
+							<option value="terminology">Company Terminology</option>
+							<option value="style">Writing Style</option>
+							<option value="rules">Content Rules</option>
+						</select>
+						<textarea class="textarea textarea-bordered min-h-28" placeholder="Guideline content (tone, rules, etc.)" bind:value={newContent} />
+						<button class="btn btn-neutral" onclick={createCampaign} disabled={createLoading}>
+							{#if createLoading}
+								<span class="loading loading-spinner loading-sm"></span>
+								Creating
+							{:else}
+								Create
+							{/if}
+						</button>
 					</div>
-				{:else if campaigns.length === 0}
-					<p class="opacity-70">No guidelines yet. Create one on the right.</p>
-				{:else}
-					<div class="overflow-x-auto">
-						<table class="table table-zebra w-full">
-							<thead>
-								<tr>
-									<th>Title</th>
-									<th>Type</th>
-									<th>Created</th>
-								</tr>
-							</thead>
-							<tbody>
-								{#each campaigns as c}
-									<tr>
-										<td class="font-medium">
-											{#if editingId === c.id}
-												<input class="input input-sm input-bordered w-full" bind:value={editTitle} />
-											{:else}
-												{c.title}
-											{/if}
-										</td>
-										<td class="uppercase text-xs opacity-70">
-											{#if editingId === c.id}
-												<select class="select select-bordered select-sm" bind:value={editType}>
-													<option value="tone">tone</option>
-													<option value="terminology">terminology</option>
-													<option value="style">style</option>
-													<option value="rules">rules</option>
-												</select>
-											{:else}
-												{c.guideline_type}
-											{/if}
-										</td>
-										<td>
-											{#if editingId === c.id}
-												<textarea class="textarea textarea-bordered textarea-sm w-full" bind:value={editContent} />
-											{:else}
-												{new Date(c.uploaded_at).toLocaleString()}
-											{/if}
-										</td>
-										<td class="w-44 text-right">
-											{#if editingId === c.id}
-												<button class="btn btn-xs btn-neutral mr-2" onclick={saveEdit}>Save</button>
-												<button class="btn btn-xs" onclick={() => (editingId = null)}>Cancel</button>
-											{:else}
-												<button class="btn btn-xs mr-2" onclick={() => startEdit(c)}>Edit</button>
-												<button class="btn btn-xs btn-error" onclick={() => deleteGuideline(c.id)}>Delete</button>
-											{/if}
-										</td>
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-				{/if}
+				</div>
 			</div>
-		</div>
+		{/if}
 
-		<!-- Create campaign + Prompt -->
-		<div class="flex flex-col gap-6">
-			<!-- Uploads -->
+		{#if true}
 			<div class="card bg-base-200">
 				<div class="card-body gap-3">
 					<div class="flex items-center justify-between">
@@ -424,57 +482,14 @@
 					{/if}
 				</div>
 			</div>
+		{/if}
 
-			<div class="card bg-base-200">
-				<div class="card-body gap-3">
-					<h2 class="card-title">Create Guideline</h2>
-					<input
-						class="input input-bordered"
-						type="text"
-						placeholder="Guideline title"
-						bind:value={newTitle}
-					/>
-					<select class="select select-bordered" bind:value={newType}>
-						<option value="tone">Tone of Voice</option>
-						<option value="terminology">Company Terminology</option>
-						<option value="style">Writing Style</option>
-						<option value="rules">Content Rules</option>
-					</select>
-					<textarea
-						class="textarea textarea-bordered min-h-28"
-						placeholder="Guideline content (tone, rules, etc.)"
-						bind:value={newContent}
-					/>
-					<button class="btn btn-neutral" onclick={createCampaign} disabled={createLoading}>
-						{#if createLoading}
-							<span class="loading loading-spinner loading-sm"></span>
-							Creating
-						{:else}
-							Create
-						{/if}
-					</button>
-				</div>
-			</div>
-
-			<div class="card bg-base-200">
-				<div class="card-body gap-3">
-					<h2 class="card-title">Prompt</h2>
-					<textarea
-						class="textarea textarea-bordered min-h-28"
-						placeholder="Describe what you want to generate..."
-						bind:value={userPrompt}
-					/>
-					<button class="btn" onclick={submitPrompt}>Submit</button>
-				</div>
-			</div>
-
-			<!-- Search Indexed Content -->
+		{#if true}
 			<div class="card bg-base-200">
 				<div class="card-body gap-3">
 					<h2 class="card-title">Search Indexed Content</h2>
 					<div class="flex gap-2">
-						<input class="input input-bordered flex-1" type="text" placeholder="Search query"
-							bind:value={searchQuery} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') runSearch(); }} />
+						<input class="input input-bordered flex-1" type="text" placeholder="Search query" bind:value={searchQuery} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') runSearch(); }} />
 						<button class="btn btn-neutral" onclick={runSearch} disabled={searchLoading}>
 							{#if searchLoading}
 								<span class="loading loading-spinner loading-sm"></span>
@@ -501,7 +516,34 @@
 					{/if}
 				</div>
 			</div>
-		</div>
+		{/if}
+
+		{#if true}
+			<div class="card bg-base-200">
+				<div class="card-body gap-3">
+					<h2 class="card-title">Prompt</h2>
+					<textarea class="textarea textarea-bordered min-h-28" placeholder="Describe what you want to generate..." bind:value={userPrompt} />
+					<button class="btn" onclick={submitPrompt}>Submit</button>
+
+					<div class="divider" />
+					<h3 class="font-semibold">Chat (LLM)</h3>
+					<input class="input input-bordered w-full" type="text" placeholder="Ask something..." bind:value={chatPrompt} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') runChat(); }} />
+					<button class="btn btn-neutral" onclick={runChat} disabled={chatLoading}>
+						{#if chatLoading}
+							<span class="loading loading-spinner loading-sm"></span>
+							Sending
+						{:else}
+							Send
+						{/if}
+					</button>
+					{#if chatReply}
+						<div class="alert mt-2">
+							<span>{chatReply}</span>
+						</div>
+					{/if}
+				</div>
+			</div>
+		{/if}
 	</div>
 </div>
 

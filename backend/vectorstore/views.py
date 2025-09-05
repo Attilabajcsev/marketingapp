@@ -6,6 +6,8 @@ from rest_framework.request import Request
 
 from .models import VectorizedChunk
 from .utils import text_to_vector, sentence_split, rank_by_similarity
+from django.conf import settings
+import requests
 
 
 @api_view(["POST"])
@@ -60,5 +62,45 @@ def search(request: Request) -> Response:
     # Keep original ordering by similarity
     ordered = [c for c in chunks if c["id"] in id_set]
     return Response({"results": ordered})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def chat(request: Request) -> Response:
+    """
+    Minimal chat endpoint. Body: { prompt }
+    Uses OpenAI if OPENAI_API_KEY present; otherwise returns an echo.
+    """
+    data = request.data or {}
+    prompt = (data.get("prompt") or "").strip()
+    if not prompt:
+        return Response({"error": "Missing prompt"}, status=400)
+
+    api_key = getattr(settings, "OPENAI_API_KEY", None)
+    if api_key:
+        try:
+            resp = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-3.5-turbo",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 64,
+                },
+                timeout=15,
+            )
+            if resp.ok:
+                data = resp.json()
+                text = data["choices"][0]["message"]["content"]
+                return Response({"reply": text})
+            else:
+                return Response({"reply": f"LLM error, echoing: {prompt}", "error": resp.text})
+        except Exception as e:
+            return Response({"reply": f"LLM error, echoing: {prompt}", "error": str(e)})
+
+    return Response({"reply": f"Echo: {prompt}"})
 
 

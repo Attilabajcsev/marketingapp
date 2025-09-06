@@ -6,8 +6,10 @@ from .serializers import (
     BrandGuidelineSerializer,
     UploadedCampaignSerializer,
     LinkedInScrapeSerializer,
+    TrustpilotScrapeSerializer,
+    WebsiteScrapeSerializer,
 )
-from .models import BrandGuideline, UploadedCampaign, LinkedInScrape
+from .models import BrandGuideline, UploadedCampaign, LinkedInScrape, TrustpilotScrape, WebsiteScrape
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -338,14 +340,26 @@ def upload_campaign_file(request: Request) -> Response:
     return Response(UploadedCampaignSerializer(created).data, status=201)
 
 
-@api_view(["POST"])
+@api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def linkedin_scrape(request: Request) -> Response:
     """Fetch a LinkedIn company URL and store raw content for the user."""
+    if request.method == "GET":
+        obj = LinkedInScrape.objects.filter(user=request.user).order_by("-created_at").first()
+        if not obj:
+            return Response({"detail": "No LinkedIn scrape found"}, status=204)
+        data = LinkedInScrapeSerializer(obj).data
+        data["preview_texts"] = [obj.content[:1000]] if obj.content else []
+        return Response(data)
+
     data = request.data or {}
     url = (data.get("url") or "").strip()
+    # tolerate leading '@' copy-pastes
+    url = url.lstrip('@ ')
     if not url or "linkedin.com" not in url:
         return Response({"error": "Please provide a valid LinkedIn URL."}, status=400)
+    if not (url.startswith("http://") or url.startswith("https://")):
+        url = "https://" + url
 
     try:
         resp = http_requests.get(
@@ -378,10 +392,28 @@ def linkedin_scrape(request: Request) -> Response:
 
     text = _extract_visible_text(html)
 
-    # If we clearly hit a login wall, surface a helpful error instead
+    # If we clearly hit a login wall, try fallback to company root/about page
     if re.search(r"LinkedIn\s+Login|Sign in \| LinkedIn", text, flags=re.IGNORECASE):
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            parts = parsed.path.split('/')
+            # find '/company/{slug}' prefix
+            if 'company' in parts:
+                idx = parts.index('company')
+                base_path = '/'.join(parts[: idx + 2])  # /company/{slug}
+                fallback_url = f"{parsed.scheme or 'https'}://{parsed.netloc}{base_path}"
+                fresp = http_requests.get(fallback_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                if fresp.ok:
+                    ftext = _extract_visible_text(fresp.text or "")
+                    if ftext:
+                        text = ftext
+        except Exception:
+            pass
+
+    if not text:
         return Response({
-            "error": "LinkedIn returned a login page; content could not be scraped. Try a public About page or paste text manually.",
+            "error": "LinkedIn returned no public content; try a public About page or paste text manually.",
         }, status=400)
 
     # Keep a reasonable cap
@@ -389,4 +421,178 @@ def linkedin_scrape(request: Request) -> Response:
         text = text[:20000]
 
     obj = LinkedInScrape.objects.create(user=request.user, url=url, content=text)
-    return Response(LinkedInScrapeSerializer(obj).data, status=201)
+    data = LinkedInScrapeSerializer(obj).data
+    # provide small preview
+    data["preview_texts"] = [text[:1000]] if text else []
+    return Response(data, status=201)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def trustpilot_scrape(request: Request) -> Response:
+    """Fetch a Trustpilot company URL and store extracted review text for the user."""
+    if request.method == "GET":
+        obj = TrustpilotScrape.objects.filter(user=request.user).order_by("-created_at").first()
+        if not obj:
+            return Response({"detail": "No Trustpilot scrape found"}, status=204)
+        data_resp = TrustpilotScrapeSerializer(obj).data
+        data_resp["preview_texts"] = (obj.content or "").split("\n")[:20]
+        return Response(data_resp)
+
+    data = request.data or {}
+    url = (data.get("url") or "").strip()
+    if not url or "trustpilot.com" not in url:
+        return Response({"error": "Please provide a valid Trustpilot URL."}, status=400)
+    if not (url.startswith("http://") or url.startswith("https://")):
+        url = "https://" + url
+
+    try:
+        resp = http_requests.get(
+            url,
+            timeout=10,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            },
+        )
+        if not resp.ok:
+            return Response({"error": f"Failed to fetch page: {resp.status_code}"}, status=400)
+        html = resp.text or ""
+    except Exception as e:
+        return Response({"error": str(e)}, status=400)
+
+    # Heuristic extraction similar to LinkedIn, tuned for reviews
+    def _extract_reviews(doc: str) -> str:
+        if not doc:
+            return ""
+        doc = re.sub(r"<script[\s\S]*?</script>", " ", doc, flags=re.IGNORECASE)
+        doc = re.sub(r"<style[\s\S]*?</style>", " ", doc, flags=re.IGNORECASE)
+        doc = re.sub(r"<br\s*/?>", "\n", doc, flags=re.IGNORECASE)
+        doc = re.sub(r"</p>", "\n", doc, flags=re.IGNORECASE)
+        doc = re.sub(r"<[^>]+>", " ", doc)
+        doc = html_lib.unescape(doc)
+        # basic segmentation
+        lines = [re.sub(r"\s+", " ", ln).strip() for ln in doc.split("\n")]
+        lines = [ln for ln in lines if ln]
+        keep = []
+        for ln in lines:
+            # ignore nav/footer/legal
+            if re.search(r"Trustpilot|Log in|Sign up|Categories|Business|Claimed|Cookies|Privacy|Terms", ln, re.IGNORECASE):
+                continue
+            if len(ln) < 20:
+                continue
+            keep.append(ln)
+        text = "\n".join(keep)
+        return text.strip()
+
+    text = _extract_reviews(html)
+    if not text:
+        return Response({"error": "No review content could be extracted from this page."}, status=400)
+    if len(text) > 20000:
+        text = text[:20000]
+
+    obj = TrustpilotScrape.objects.create(user=request.user, url=url, content=text)
+    data = TrustpilotScrapeSerializer(obj).data
+    data["preview_texts"] = text.split("\n")[:20]
+    return Response(data, status=201)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def website_scrape(request: Request) -> Response:
+    """Given a blog index URL, discover post links, fetch each, chunk and index via vectorstore."""
+    if request.method == "GET":
+        obj = WebsiteScrape.objects.filter(user=request.user).order_by("-created_at").first()
+        if not obj:
+            return Response({"detail": "No Website scrape found"}, status=204)
+        data_resp = WebsiteScrapeSerializer(obj).data
+        # collect a small sample of recent website chunks
+        from vectorstore.models import VectorizedChunk
+        chunks = list(
+            VectorizedChunk.objects.filter(user=request.user, source_type="website", source_id=obj.id)
+            .order_by("-id")
+            .values_list("text", flat=True)[:20]
+        )
+        data_resp["preview_texts"] = chunks
+        return Response(data_resp)
+
+    data = request.data or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return Response({"error": "Please provide a valid website URL."}, status=400)
+    if not (url.startswith("http://") or url.startswith("https://")):
+        url = "https://" + url
+
+    try:
+        resp = http_requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if not resp.ok:
+            return Response({"error": f"Failed to fetch page: {resp.status_code}"}, status=400)
+        html = resp.text or ""
+    except Exception as e:
+        return Response({"error": str(e)}, status=400)
+
+    # naive link extraction to blog posts (looks for /blog/ or article links)
+    links = re.findall(r"href=\"([^\"]+)\"", html)
+    def _abs(u: str) -> str:
+        if u.startswith("http://") or u.startswith("https://"):
+            return u
+        from urllib.parse import urljoin
+        return urljoin(url, u)
+
+    cand = []
+    for ln in links:
+        if any(k in ln.lower() for k in ["/blog/", "/posts/", "/article", "/news/"]):
+            cand.append(_abs(ln))
+    # de-dup and cap
+    seen = set()
+    post_urls: list[str] = []
+    for c in cand:
+        if c not in seen:
+            seen.add(c)
+            post_urls.append(c)
+        if len(post_urls) >= 15:
+            break
+
+    # fetch each post, extract text and index via vectorstore ingest
+    from vectorstore.utils import sentence_split, text_to_vector
+    from vectorstore.models import VectorizedChunk
+
+    # create WebsiteScrape record first to associate chunks
+    obj = WebsiteScrape.objects.create(user=request.user, url=url, post_urls=post_urls)
+
+    preview_texts: list[str] = []
+    for purl in post_urls:
+        try:
+            pr = http_requests.get(purl, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            if not pr.ok:
+                continue
+            phtml = pr.text or ""
+            # very simple text extraction
+            ptext = re.sub(r"<script[\s\S]*?</script>", " ", phtml, flags=re.IGNORECASE)
+            ptext = re.sub(r"<style[\s\S]*?</style>", " ", ptext, flags=re.IGNORECASE)
+            ptext = re.sub(r"<br\s*/?>", "\n", ptext, flags=re.IGNORECASE)
+            ptext = re.sub(r"</p>", "\n", ptext, flags=re.IGNORECASE)
+            ptext = re.sub(r"<[^>]+>", " ", ptext)
+            ptext = html_lib.unescape(ptext)
+            ptext = re.sub(r"\s+", " ", ptext).strip()
+            if not ptext:
+                continue
+            # ingest: we treat each discovered post as an "upload"-like unit for RAG
+            chunks = sentence_split(ptext)
+            for ch in chunks:
+                if not ch.strip():
+                    continue
+                VectorizedChunk.objects.create(
+                    user=request.user,
+                    source_type="website",
+                    source_id=obj.id,
+                    text=ch,
+                    vector=text_to_vector(ch),
+                )
+                if len(preview_texts) < 20:
+                    preview_texts.append(ch)
+        except Exception:
+            continue
+
+    payload = WebsiteScrapeSerializer(obj).data
+    payload["preview_texts"] = preview_texts
+    return Response(payload, status=201)

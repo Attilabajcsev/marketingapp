@@ -68,8 +68,27 @@
 	let linkedinLoading: boolean = $state(false);
 	let linkedinLoaded: boolean = $state(false);
 	let usedLinkedIn: boolean = $state(false);
+	let linkedinError: string = $state('');
+	let trustpilotUrl: string = $state('');
+	let trustpilotLoading: boolean = $state(false);
+	let trustpilotLoaded: boolean = $state(false);
+	let trustpilotError: string = $state('');
+	let websiteUrl: string = $state('');
+	let websiteLoading: boolean = $state(false);
+	let websiteLoaded: boolean = $state(false);
+	let websiteError: string = $state('');
 	let showLinkedinPreview: boolean = $state(false);
 	let linkedinPreview: string = $state('');
+	let showTrustpilotPreview: boolean = $state(false);
+	let trustpilotPreviewAll: string[] = $state([]);
+	let showWebsitePreview: boolean = $state(false);
+	let websitePreviewAll: string[] = $state([]);
+	let usedTrustpilot: boolean = $state(false);
+	let trustpilotPreview: string = $state('');
+	let showContextAudit: boolean = $state(false);
+	let auditData: { brand_guidelines?: any; prompt_messages?: any; rag_uploads_examples?: any[]; rag_websites_examples?: any[] } = $state({});
+	let ragUploadsExamples: { chunk_id: number; source_type: string; source_id: number; text: string }[] = $state([]);
+	let ragWebsitesExamples: { chunk_id: number; source_type: string; source_id: number; text: string }[] = $state([]);
 
 	async function copyOutput() {
 		if (!hasOutput) return;
@@ -292,7 +311,22 @@
 			const data = await res.json();
 			outputText = data.reply ?? '';
 			usedLinkedIn = Boolean(data.used_linkedin);
-			linkedinPreview = String(data.linkedin_context_preview || '');
+			usedTrustpilot = Boolean(data.used_trustpilot);
+			// update previews from generation response if available
+			if (!linkedinPreview && data.linkedin_context_preview) {
+				linkedinPreview = String(data.linkedin_context_preview);
+			}
+			if (!trustpilotPreview && data.trustpilot_context_preview) {
+				trustpilotPreview = String(data.trustpilot_context_preview);
+			}
+			ragUploadsExamples = Array.isArray(data.rag_uploads_examples) ? data.rag_uploads_examples : [];
+			ragWebsitesExamples = Array.isArray(data.rag_websites_examples) ? data.rag_websites_examples : [];
+			auditData = {
+				brand_guidelines: data.brand_guidelines,
+				prompt_messages: data.prompt_messages,
+				rag_uploads_examples: ragUploadsExamples,
+				rag_websites_examples: ragWebsitesExamples
+			};
 		} catch (e) {
 			console.error(e);
 			outputText = 'Error generating content.';
@@ -306,6 +340,7 @@
 		if (!url) return;
 		linkedinLoading = true;
 		linkedinLoaded = false;
+		linkedinError = '';
 		try {
 			const res = await fetch('api/linkedin/scrape/', {
 				method: 'POST',
@@ -313,14 +348,111 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ url })
 			});
-			if (!res.ok) return;
-			await res.json();
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({}));
+				linkedinError = String(err?.error || 'Failed to fetch LinkedIn content');
+				return;
+			}
+			const data = await res.json();
+			linkedinPreview = String((data && data.preview_texts && data.preview_texts[0]) || '');
 			linkedinLoaded = true;
 		} catch (e) {
 			console.error(e);
+			linkedinError = 'Failed to fetch LinkedIn content';
 		} finally {
 			linkedinLoading = false;
 		}
+	}
+
+	async function scanTrustpilot() {
+		const url = trustpilotUrl.trim();
+		if (!url) return;
+		trustpilotLoading = true;
+		trustpilotLoaded = false;
+		trustpilotError = '';
+		try {
+			const res = await fetch('api/trustpilot/scrape/', {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ url })
+			});
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({}));
+				trustpilotError = String(err?.error || 'Failed to fetch Trustpilot content');
+				return;
+			}
+			const data = await res.json();
+			trustpilotPreviewAll = Array.isArray(data?.preview_texts) ? data.preview_texts : [];
+			trustpilotLoaded = true;
+		} catch (e) {
+			console.error(e);
+			trustpilotError = 'Failed to fetch Trustpilot content';
+		} finally {
+			trustpilotLoading = false;
+		}
+	}
+
+	async function scanWebsite() {
+		const url = websiteUrl.trim();
+		if (!url) return;
+		websiteLoading = true;
+		websiteError = '';
+		try {
+			const res = await fetch('api/website/scrape/', {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ url })
+			});
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({}));
+				websiteError = String(err?.error || 'Failed to fetch website content');
+				return;
+			}
+			const data = await res.json();
+			websitePreviewAll = Array.isArray(data?.preview_texts) ? data.preview_texts : [];
+			websiteLoaded = true;
+		} catch (e) {
+			console.error(e);
+			websiteError = 'Failed to fetch website content';
+		} finally {
+			websiteLoading = false;
+		}
+	}
+
+	// Load any previously saved scrapes so view buttons persist after refresh
+	async function loadSavedSources() {
+		try {
+			// LinkedIn
+			const li = await fetch('api/linkedin/scrape/', { credentials: 'include' });
+			if (li.ok) {
+				const data = await li.json();
+				linkedinPreview = String((data && data.preview_texts && data.preview_texts[0]) || '');
+				linkedinLoaded = true;
+				if (data?.url) linkedinUrl = data.url;
+			}
+		} catch {}
+		try {
+			// Trustpilot
+			const tp = await fetch('api/trustpilot/scrape/', { credentials: 'include' });
+			if (tp.ok) {
+				const data = await tp.json();
+				trustpilotPreviewAll = Array.isArray(data?.preview_texts) ? data.preview_texts : [];
+				trustpilotLoaded = true;
+				if (data?.url) trustpilotUrl = data.url;
+			}
+		} catch {}
+		try {
+			// Website
+			const wb = await fetch('api/website/scrape/', { credentials: 'include' });
+			if (wb.ok) {
+				const data = await wb.json();
+				websitePreviewAll = Array.isArray(data?.preview_texts) ? data.preview_texts : [];
+				websiteLoaded = true;
+				if (data?.url) websiteUrl = data.url;
+			}
+		} catch {}
 	}
 
 	async function loadUploads() {
@@ -367,6 +499,7 @@
 
 	onMount(loadCampaigns);
 	onMount(loadUploads);
+	onMount(loadSavedSources);
 </script>
 
 <div class="min-h-screen bg-white p-6">
@@ -384,11 +517,22 @@
 				<div class="rounded-md border border-gray-200 bg-white p-4">
 					<div class="mb-2 flex items-center justify-between">
 						<h3 class="font-medium">Links</h3>
-						<span class="text-sm {linkedinLoaded ? 'text-green-600' : 'text-gray-500'}">{linkedinLoaded ? '✓ LinkedIn loaded' : 'No data yet'}</span>
 					</div>
 					<div class="space-y-2">
-						<input class="input input-bordered w-full" type="url" placeholder="www.example.com" />
-						<input class="input input-bordered w-full" type="url" placeholder="www.trustpilot/example.com" />
+						<div class="flex gap-2">
+							<input class="input input-bordered w-full" type="url" placeholder="www.example.com/blog" bind:value={websiteUrl} />
+							<button class="btn btn-neutral" onclick={scanWebsite} disabled={websiteLoading || !websiteUrl}>
+								{#if websiteLoading}
+									<span class="loading loading-spinner loading-sm"></span>
+									Scanning
+								{:else}
+									Scan Website
+								{/if}
+							</button>
+						</div>
+						{#if websiteError}
+							<p class="text-xs text-red-600">{websiteError}</p>
+						{/if}
 						<div class="flex gap-2">
 							<input class="input input-bordered w-full" type="url" placeholder="www.linkedin.com/company/example" bind:value={linkedinUrl} />
 							<button class="btn btn-neutral" onclick={scanLinkedIn} disabled={linkedinLoading || !linkedinUrl}>
@@ -400,12 +544,34 @@
 								{/if}
 							</button>
 						</div>
-						{#if usedLinkedIn}
-							<div class="flex items-center gap-2">
-								<p class="text-xs text-green-600">Using LinkedIn content in generation</p>
-								<button class="btn btn-xs" onclick={() => (showLinkedinPreview = true)}>Preview</button>
-							</div>
+						{#if linkedinError}
+							<p class="text-xs text-red-600">{linkedinError}</p>
 						{/if}
+						<div class="flex gap-2">
+							<input class="input input-bordered w-full" type="url" placeholder="www.trustpilot.com/review/example.com" bind:value={trustpilotUrl} />
+							<button class="btn btn-neutral" onclick={scanTrustpilot} disabled={trustpilotLoading || !trustpilotUrl}>
+								{#if trustpilotLoading}
+									<span class="loading loading-spinner loading-sm"></span>
+									Scanning
+								{:else}
+									Scan Trustpilot
+								{/if}
+							</button>
+						</div>
+						{#if trustpilotError}
+							<p class="text-xs text-red-600">{trustpilotError}</p>
+						{/if}
+						<div class="flex items-center gap-2">
+							{#if linkedinLoaded}
+								<button class="btn btn-xs" onclick={() => (showLinkedinPreview = true)}>View LinkedIn</button>
+							{/if}
+							{#if trustpilotLoaded}
+								<button class="btn btn-xs" onclick={() => (showTrustpilotPreview = true)}>View Trustpilot</button>
+							{/if}
+							{#if websiteUrl}
+								<button class="btn btn-xs" onclick={() => (showWebsitePreview = true)}>View Website</button>
+							{/if}
+						</div>
 					</div>
 				</div>
 
@@ -521,6 +687,9 @@
 						{/if}
 						<button class="btn" onclick={copyOutput} disabled={!hasOutput}>Copy</button>
 						<button class="btn" onclick={downloadOutput} disabled={!hasOutput}>Download</button>
+						{#if hasOutput && (usedLinkedIn || usedTrustpilot || (auditData?.similar_examples && auditData.similar_examples.length))}
+							<button class="btn" onclick={() => (showContextAudit = true)}>Used context</button>
+						{/if}
 					</div>
 				</div>
 			</div>
@@ -575,7 +744,7 @@
 </dialog>
 {/if}
 
-{#if showLinkedinPreview && usedLinkedIn}
+{#if showLinkedinPreview && linkedinLoaded}
 <dialog class="modal modal-open">
 	<div class="modal-box max-w-2xl">
 		<h3 class="font-bold text-lg mb-2">LinkedIn context preview</h3>
@@ -589,6 +758,90 @@
 	</div>
 	<form method="dialog" class="modal-backdrop">
 		<button onclick={() => (showLinkedinPreview = false)}>close</button>
+	</form>
+</dialog>
+{/if}
+
+{#if showTrustpilotPreview && trustpilotLoaded}
+<dialog class="modal modal-open">
+	<div class="modal-box max-w-3xl">
+		<h3 class="font-bold text-lg mb-2">Trustpilot reviews preview</h3>
+		<div class="max-h-96 overflow-y-auto space-y-2">
+			{#if trustpilotPreviewAll?.length}
+				{#each trustpilotPreviewAll as t, i}
+					<div class="rounded-md border border-gray-200 bg-white p-3">
+						<p class="text-xs opacity-70 mb-1">Review {i + 1}</p>
+						<p class="whitespace-pre-wrap text-sm">{t}</p>
+					</div>
+				{/each}
+			{:else}
+				<p class="opacity-70">No preview available.</p>
+			{/if}
+		</div>
+		<div class="modal-action">
+			<button class="btn" onclick={() => (showTrustpilotPreview = false)}>Close</button>
+		</div>
+	</div>
+	<form method="dialog" class="modal-backdrop">
+		<button onclick={() => (showTrustpilotPreview = false)}>close</button>
+	</form>
+</dialog>
+{/if}
+
+{#if showWebsitePreview}
+<dialog class="modal modal-open">
+	<div class="modal-box max-w-3xl">
+		<h3 class="font-bold text-lg mb-2">Website blog preview</h3>
+		<div class="max-h-96 overflow-y-auto space-y-2">
+			{#if websitePreviewAll?.length}
+				{#each websitePreviewAll as t, i}
+					<div class="rounded-md border border-gray-200 bg-white p-3">
+						<p class="text-xs opacity-70 mb-1">Excerpt {i + 1}</p>
+						<p class="whitespace-pre-wrap text-sm">{t}</p>
+					</div>
+				{/each}
+			{:else}
+				<p class="opacity-70">No preview available.</p>
+			{/if}
+		</div>
+		<div class="modal-action">
+			<button class="btn" onclick={() => (showWebsitePreview = false)}>Close</button>
+		</div>
+	</div>
+	<form method="dialog" class="modal-backdrop">
+		<button onclick={() => (showWebsitePreview = false)}>close</button>
+	</form>
+</dialog>
+{/if}
+
+{#if showContextAudit}
+<dialog class="modal modal-open">
+	<div class="modal-box max-w-4xl">
+		<h3 class="font-bold text-lg mb-2">Used context & prompt</h3>
+		<div class="max-h-[70vh] overflow-y-auto space-y-4">
+			<div>
+				<h4 class="font-semibold mb-1">Brand Guidelines</h4>
+				<pre class="whitespace-pre-wrap text-sm bg-base-200 p-2 rounded">{JSON.stringify(auditData.brand_guidelines, null, 2)}</pre>
+			</div>
+			<div>
+				<h4 class="font-semibold mb-1">Uploads (RAG)</h4>
+				<pre class="whitespace-pre-wrap text-sm bg-base-200 p-2 rounded">{JSON.stringify(auditData.rag_uploads_examples, null, 2)}</pre>
+			</div>
+			<div>
+				<h4 class="font-semibold mb-1">Blogs (RAG)</h4>
+				<pre class="whitespace-pre-wrap text-sm bg-base-200 p-2 rounded">{JSON.stringify(auditData.rag_websites_examples, null, 2)}</pre>
+			</div>
+			<div>
+				<h4 class="font-semibold mb-1">Prompt Template Messages</h4>
+				<pre class="whitespace-pre-wrap text-sm bg-base-200 p-2 rounded">{JSON.stringify(auditData.prompt_messages, null, 2)}</pre>
+			</div>
+		</div>
+		<div class="modal-action">
+			<button class="btn" onclick={() => (showContextAudit = false)}>Close</button>
+		</div>
+	</div>
+	<form method="dialog" class="modal-backdrop">
+		<button onclick={() => (showContextAudit = false)}>close</button>
 	</form>
 </dialog>
 {/if}

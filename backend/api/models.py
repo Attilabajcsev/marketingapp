@@ -74,3 +74,42 @@ class LinkedInScrape(models.Model):
             models.Index(fields=["user", "url"]),
             models.Index(fields=["user", "created_at"]),
         ]
+
+
+class TrustpilotScrape(models.Model):
+    """Stores raw scraped Trustpilot reviews text for a user and URL."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="trustpilot_scrapes",
+    )
+    url = models.URLField(max_length=500)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["user", "url"]),
+            models.Index(fields=["user", "created_at"]),
+        ]
+
+
+class WebsiteScrape(models.Model):
+    """Stores metadata about a website blog scrape and associates vectorized chunks."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="website_scrapes",
+    )
+    url = models.URLField(max_length=500)
+    post_urls = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["user", "created_at"]),
+        ]

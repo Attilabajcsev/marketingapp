@@ -20,6 +20,9 @@ def build_generation_messages(
     style_guidelines: List[str],
     content_rules: List[str],
     similar_campaigns: List[str],
+    linkedin_context: List[str] | None = None,
+    trustpilot_context: List[str] | None = None,
+    website_context: List[str] | None = None,
 ) -> list[dict[str, str]]:
     """
     Returns OpenAI chat messages with a dedicated system role and a user message
@@ -45,6 +48,27 @@ def build_generation_messages(
         "#### Content Rules\n" + _join_guidelines(content_rules)
     )
 
+    # Optional context sections
+    opt_sections: List[str] = []
+
+    if linkedin_context:
+        ln_lines: List[str] = ["### LinkedIn Context (verbatim snippets)"]
+        for i, txt in enumerate(linkedin_context[:3], start=1):
+            ln_lines.append(f"Snippet {i}:\n" + txt.strip())
+        opt_sections.append("\n\n".join(ln_lines))
+
+    if trustpilot_context:
+        tp_lines: List[str] = ["### Trustpilot Reviews (verbatim snippets)"]
+        for i, txt in enumerate(trustpilot_context[:5], start=1):
+            tp_lines.append(f"Review {i}:\n" + txt.strip())
+        opt_sections.append("\n\n".join(tp_lines))
+
+    if website_context:
+        wb_lines: List[str] = ["### Website Blog Excerpts (RAG)"]
+        for i, txt in enumerate(website_context[:5], start=1):
+            wb_lines.append(f"Excerpt {i}:\n" + txt.strip())
+        opt_sections.append("\n\n".join(wb_lines))
+
     examples_section_lines: List[str] = ["### Similar Past Campaigns (for inspiration only)"]
     if similar_campaigns:
         for i, txt in enumerate(similar_campaigns[:5], start=1):
@@ -64,9 +88,10 @@ def build_generation_messages(
 
     user_content = (
         f"{brand_guidelines}\n\n"
-        f"{examples_section}\n\n"
-        f"### User Request\n{user_request.strip()}\n\n"
-        f"{output_instructions}"
+        + (("\n\n".join(opt_sections) + "\n\n") if opt_sections else "")
+        + f"{examples_section}\n\n"
+        + f"### User Request\n{user_request.strip()}\n\n"
+        + f"{output_instructions}"
     )
 
     return [

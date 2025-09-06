@@ -9,6 +9,7 @@ from .utils import text_to_vector, sentence_split, rank_by_similarity
 from django.conf import settings
 import requests
 from api.models import BrandGuideline
+from api.models import TrustpilotScrape
 from .prompt_template import build_generation_messages
 from api.models import LinkedInScrape
 
@@ -129,31 +130,55 @@ def generate(request: Request) -> Response:
     style = [bg.content for bg in qs.filter(guideline_type="style")]
     rules = [bg.content for bg in qs.filter(guideline_type="rules")]
 
-    # RAG over uploaded campaigns only
-    # Filter vector chunks to uploads
-    chunks = list(
+    # RAG over uploads and websites separately
+    uploads_chunks = list(
         VectorizedChunk.objects.filter(user=request.user, source_type="upload").values(
             "id", "vector", "text", "source_id"
         )
     )
-    similar_texts: list[str] = []
-    similar_examples: list[dict] = []
-    if chunks:
-        vectors = [(c["id"], c["vector"]) for c in chunks]
-        texts = [c["text"] for c in chunks]
-        idxs = rank_by_similarity(prompt, vectors, texts, top_k=top_k)
-        id_to_chunk = {c["id"]: c for c in chunks}
-        for idx in idxs:
-            ch = id_to_chunk.get(idx)
+    websites_chunks = list(
+        VectorizedChunk.objects.filter(user=request.user, source_type="website").values(
+            "id", "vector", "text", "source_id"
+        )
+    )
+
+    rag_uploads: list[str] = []
+    rag_uploads_examples: list[dict] = []
+    if uploads_chunks:
+        u_vectors = [(c["id"], c["vector"]) for c in uploads_chunks]
+        u_texts = [c["text"] for c in uploads_chunks]
+        u_idxs = rank_by_similarity(prompt, u_vectors, u_texts, top_k=top_k)
+        u_map = {c["id"]: c for c in uploads_chunks}
+        for idx in u_idxs:
+            ch = u_map.get(idx)
             if ch:
-                similar_texts.append(ch["text"])
-                similar_examples.append({
+                rag_uploads.append(ch["text"])
+                rag_uploads_examples.append({
                     "chunk_id": ch["id"],
-                    "upload_id": ch["source_id"],
+                    "source_type": "upload",
+                    "source_id": ch["source_id"],
                     "text": ch["text"],
                 })
 
-    # Include latest LinkedIn scrape content (if any) as additional example context
+    rag_websites: list[str] = []
+    rag_websites_examples: list[dict] = []
+    if websites_chunks:
+        w_vectors = [(c["id"], c["vector"]) for c in websites_chunks]
+        w_texts = [c["text"] for c in websites_chunks]
+        w_idxs = rank_by_similarity(prompt, w_vectors, w_texts, top_k=top_k)
+        w_map = {c["id"]: c for c in websites_chunks}
+        for idx in w_idxs:
+            ch = w_map.get(idx)
+            if ch:
+                rag_websites.append(ch["text"])
+                rag_websites_examples.append({
+                    "chunk_id": ch["id"],
+                    "source_type": "website",
+                    "source_id": ch["source_id"],
+                    "text": ch["text"],
+                })
+
+    # Include latest LinkedIn/Trustpilot content (if any) as additional example context
     linkedin_texts = list(
         LinkedInScrape.objects.filter(user=request.user)
         .order_by("-created_at")
@@ -162,11 +187,19 @@ def generate(request: Request) -> Response:
     # Trim LinkedIn content to avoid overly large prompts
     linkedin_texts = [txt[:4000] for txt in linkedin_texts if isinstance(txt, str)]
 
+    trustpilot_texts = list(
+        TrustpilotScrape.objects.filter(user=request.user)
+        .order_by("-created_at")
+        .values_list("content", flat=True)[:1]
+    )
+    trustpilot_texts = [txt[:4000] for txt in trustpilot_texts if isinstance(txt, str)]
+
     used_linkedin = bool(linkedin_texts)
+    used_trustpilot = bool(trustpilot_texts)
     linkedin_context_preview = (linkedin_texts[0][:800] if used_linkedin else "")
-    if used_linkedin:
-        # Prepend LinkedIn content to similar_texts used as extra context
-        similar_texts = linkedin_texts + similar_texts
+    trustpilot_context_preview = (trustpilot_texts[0][:800] if used_trustpilot else "")
+    # Note: LinkedIn and Trustpilot are passed as separate context sections,
+    # not merged into RAG lists
 
     messages = build_generation_messages(
         user_request=prompt,
@@ -174,8 +207,19 @@ def generate(request: Request) -> Response:
         terminology_guidelines=terminology,
         style_guidelines=style,
         content_rules=rules,
-        similar_campaigns=similar_texts,
+        similar_campaigns=rag_uploads,
+        linkedin_context=linkedin_texts if used_linkedin else [],
+        trustpilot_context=trustpilot_texts if used_trustpilot else [],
+        website_context=rag_websites,
     )
+
+    # Prepare audit payload so the frontend can inspect exactly what was used
+    brand_guidelines_out = {
+        "tone": tone,
+        "terminology": terminology,
+        "style": style,
+        "rules": rules,
+    }
 
     api_key = getattr(settings, "OPENAI_API_KEY", None)
     if api_key:
@@ -197,11 +241,43 @@ def generate(request: Request) -> Response:
             if resp.ok:
                 data = resp.json()
                 text = data["choices"][0]["message"]["content"]
-                return Response({"reply": text, "similar_examples": similar_examples, "used_linkedin": used_linkedin, "linkedin_context_preview": linkedin_context_preview})
+                return Response({
+                    "reply": text,
+                    "rag_uploads_examples": rag_uploads_examples,
+                    "rag_websites_examples": rag_websites_examples,
+                    "used_linkedin": used_linkedin,
+                    "linkedin_context_preview": linkedin_context_preview,
+                    "used_trustpilot": used_trustpilot,
+                    "trustpilot_context_preview": trustpilot_context_preview,
+                    "brand_guidelines": brand_guidelines_out,
+                    "prompt_messages": messages,
+                })
             else:
-                return Response({"reply": f"LLM error, echoing: {prompt}", "error": resp.text, "similar_examples": similar_examples, "used_linkedin": used_linkedin, "linkedin_context_preview": linkedin_context_preview})
+                return Response({
+                    "reply": f"LLM error, echoing: {prompt}",
+                    "error": resp.text,
+                    "rag_uploads_examples": rag_uploads_examples,
+                    "rag_websites_examples": rag_websites_examples,
+                    "used_linkedin": used_linkedin,
+                    "linkedin_context_preview": linkedin_context_preview,
+                    "used_trustpilot": used_trustpilot,
+                    "trustpilot_context_preview": trustpilot_context_preview,
+                    "brand_guidelines": brand_guidelines_out,
+                    "prompt_messages": messages,
+                })
         except Exception as e:
-            return Response({"reply": f"LLM error, echoing: {prompt}", "error": str(e), "similar_examples": similar_examples, "used_linkedin": used_linkedin, "linkedin_context_preview": linkedin_context_preview})
+            return Response({
+                "reply": f"LLM error, echoing: {prompt}",
+                "error": str(e),
+                "rag_uploads_examples": rag_uploads_examples,
+                "rag_websites_examples": rag_websites_examples,
+                "used_linkedin": used_linkedin,
+                "linkedin_context_preview": linkedin_context_preview,
+                "used_trustpilot": used_trustpilot,
+                "trustpilot_context_preview": trustpilot_context_preview,
+                "brand_guidelines": brand_guidelines_out,
+                "prompt_messages": messages,
+            })
 
     # Fallback echo uses the constructed template context minimally
     synthetic = "\n\n".join([
@@ -212,6 +288,16 @@ def generate(request: Request) -> Response:
         "[Similar] " + " | ".join(similar_texts) if similar_texts else "",
         "[Request] " + prompt,
     ])
-    return Response({"reply": synthetic.strip(), "similar_examples": similar_examples, "used_linkedin": used_linkedin, "linkedin_context_preview": linkedin_context_preview})
+    return Response({
+        "reply": synthetic.strip(),
+        "rag_uploads_examples": rag_uploads_examples,
+        "rag_websites_examples": rag_websites_examples,
+        "used_linkedin": used_linkedin,
+        "linkedin_context_preview": linkedin_context_preview,
+        "used_trustpilot": used_trustpilot,
+        "trustpilot_context_preview": trustpilot_context_preview,
+        "brand_guidelines": brand_guidelines_out,
+        "prompt_messages": messages,
+    })
 
 

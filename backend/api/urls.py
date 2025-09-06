@@ -8,6 +8,8 @@ from .views import (
     upload_campaign_file,
     uploaded_campaign_detail,
     linkedin_scrape,
+    trustpilot_scrape,
+    website_scrape,
 )
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
@@ -46,4 +48,8 @@ urlpatterns = [
     path("uploaded-campaigns/<int:upload_id>/", uploaded_campaign_detail, name="uploaded_campaign_detail"),
     # LinkedIn scraping
     path("linkedin/scrape/", linkedin_scrape, name="linkedin_scrape"),
+    # Trustpilot scraping
+    path("trustpilot/scrape/", trustpilot_scrape, name="trustpilot_scrape"),
+    # Website scraping
+    path("website/scrape/", website_scrape, name="website_scrape"),
 ]

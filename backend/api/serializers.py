@@ -1,6 +1,6 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
-from .models import BrandGuideline, UploadedCampaign, LinkedInScrape
+from .models import BrandGuideline, UploadedCampaign, LinkedInScrape, TrustpilotScrape, WebsiteScrape
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -79,3 +79,29 @@ class LinkedInScrapeSerializer(serializers.ModelSerializer):
         if request is None or request.user.is_anonymous:
             raise serializers.ValidationError("Authentication required.")
         return LinkedInScrape.objects.create(user=request.user, **validated_data)
+
+
+class TrustpilotScrapeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TrustpilotScrape
+        fields = ["id", "url", "content", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        if request is None or request.user.is_anonymous:
+            raise serializers.ValidationError("Authentication required.")
+        return TrustpilotScrape.objects.create(user=request.user, **validated_data)
+
+
+class WebsiteScrapeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WebsiteScrape
+        fields = ["id", "url", "post_urls", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        if request is None or request.user.is_anonymous:
+            raise serializers.ValidationError("Authentication required.")
+        return WebsiteScrape.objects.create(user=request.user, **validated_data)

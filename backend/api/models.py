@@ -106,6 +106,8 @@ class WebsiteScrape(models.Model):
     )
     url = models.URLField(max_length=500)
     post_urls = models.JSONField(default=list, blank=True)
+    # Full extracted posts for auditing: [{"url": str, "title": str, "text": str}]
+    posts = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -69,22 +69,15 @@
 	let linkedinLoaded: boolean = $state(false);
 	let usedLinkedIn: boolean = $state(false);
 	let linkedinError: string = $state('');
-	let trustpilotUrl: string = $state('');
-	let trustpilotLoading: boolean = $state(false);
-	let trustpilotLoaded: boolean = $state(false);
-	let trustpilotError: string = $state('');
 	let websiteUrl: string = $state('');
 	let websiteLoading: boolean = $state(false);
 	let websiteLoaded: boolean = $state(false);
 	let websiteError: string = $state('');
 	let showLinkedinPreview: boolean = $state(false);
 	let linkedinPreview: string = $state('');
-	let showTrustpilotPreview: boolean = $state(false);
-	let trustpilotPreviewAll: string[] = $state([]);
+	let linkedinFull: string = $state('');
 	let showWebsitePreview: boolean = $state(false);
 	let websitePreviewAll: string[] = $state([]);
-	let usedTrustpilot: boolean = $state(false);
-	let trustpilotPreview: string = $state('');
 	let showContextAudit: boolean = $state(false);
 	let auditData: { brand_guidelines?: any; prompt_messages?: any; rag_uploads_examples?: any[]; rag_websites_examples?: any[] } = $state({});
 	let ragUploadsExamples: { chunk_id: number; source_type: string; source_id: number; text: string }[] = $state([]);
@@ -292,9 +285,9 @@
 		}
 	}
 
-	async function submitPrompt() {
+	async function generate() {
 		const prompt = userPrompt.trim();
-		if (!prompt || generating) return;
+		if (!prompt) return;
 		generating = true;
 		outputText = '';
 		try {
@@ -311,13 +304,9 @@
 			const data = await res.json();
 			outputText = data.reply ?? '';
 			usedLinkedIn = Boolean(data.used_linkedin);
-			usedTrustpilot = Boolean(data.used_trustpilot);
 			// update previews from generation response if available
 			if (!linkedinPreview && data.linkedin_context_preview) {
 				linkedinPreview = String(data.linkedin_context_preview);
-			}
-			if (!trustpilotPreview && data.trustpilot_context_preview) {
-				trustpilotPreview = String(data.trustpilot_context_preview);
 			}
 			ragUploadsExamples = Array.isArray(data.rag_uploads_examples) ? data.rag_uploads_examples : [];
 			ragWebsitesExamples = Array.isArray(data.rag_websites_examples) ? data.rag_websites_examples : [];
@@ -354,42 +343,14 @@
 				return;
 			}
 			const data = await res.json();
-			linkedinPreview = String((data && data.preview_texts && data.preview_texts[0]) || '');
+			linkedinFull = String(data?.content || '');
+			linkedinPreview = linkedinFull ? linkedinFull : String((data && data.preview_texts && data.preview_texts[0]) || '');
 			linkedinLoaded = true;
 		} catch (e) {
 			console.error(e);
 			linkedinError = 'Failed to fetch LinkedIn content';
 		} finally {
 			linkedinLoading = false;
-		}
-	}
-
-	async function scanTrustpilot() {
-		const url = trustpilotUrl.trim();
-		if (!url) return;
-		trustpilotLoading = true;
-		trustpilotLoaded = false;
-		trustpilotError = '';
-		try {
-			const res = await fetch('api/trustpilot/scrape/', {
-				method: 'POST',
-				credentials: 'include',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ url })
-			});
-			if (!res.ok) {
-				const err = await res.json().catch(() => ({}));
-				trustpilotError = String(err?.error || 'Failed to fetch Trustpilot content');
-				return;
-			}
-			const data = await res.json();
-			trustpilotPreviewAll = Array.isArray(data?.preview_texts) ? data.preview_texts : [];
-			trustpilotLoaded = true;
-		} catch (e) {
-			console.error(e);
-			trustpilotError = 'Failed to fetch Trustpilot content';
-		} finally {
-			trustpilotLoading = false;
 		}
 	}
 
@@ -405,13 +366,20 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ url })
 			});
+			const data = await res.json().catch(() => ({}));
 			if (!res.ok) {
-				const err = await res.json().catch(() => ({}));
-				websiteError = String(err?.error || 'Failed to fetch website content');
+				websiteError = String(data?.error || 'Failed to fetch website content');
 				return;
 			}
-			const data = await res.json();
-			websitePreviewAll = Array.isArray(data?.preview_texts) ? data.preview_texts : [];
+			if (data?.error) {
+				websiteError = String(data.error);
+			}
+			// Prefer full posts if provided
+			if (Array.isArray(data?.preview_posts_full) && data.preview_posts_full.length) {
+				websitePreviewAll = data.preview_posts_full.map((p: any) => `${p.title || 'Untitled'}\n\n${p.text || ''}`);
+			} else {
+				websitePreviewAll = Array.isArray(data?.preview_texts) ? data.preview_texts : [];
+			}
 			websiteLoaded = true;
 		} catch (e) {
 			console.error(e);
@@ -428,19 +396,10 @@
 			const li = await fetch('api/linkedin/scrape/', { credentials: 'include' });
 			if (li.ok) {
 				const data = await li.json();
-				linkedinPreview = String((data && data.preview_texts && data.preview_texts[0]) || '');
+				linkedinFull = String(data?.content || '');
+				linkedinPreview = linkedinFull ? linkedinFull : String((data && data.preview_texts && data.preview_texts[0]) || '');
 				linkedinLoaded = true;
 				if (data?.url) linkedinUrl = data.url;
-			}
-		} catch {}
-		try {
-			// Trustpilot
-			const tp = await fetch('api/trustpilot/scrape/', { credentials: 'include' });
-			if (tp.ok) {
-				const data = await tp.json();
-				trustpilotPreviewAll = Array.isArray(data?.preview_texts) ? data.preview_texts : [];
-				trustpilotLoaded = true;
-				if (data?.url) trustpilotUrl = data.url;
 			}
 		} catch {}
 		try {
@@ -448,7 +407,11 @@
 			const wb = await fetch('api/website/scrape/', { credentials: 'include' });
 			if (wb.ok) {
 				const data = await wb.json();
-				websitePreviewAll = Array.isArray(data?.preview_texts) ? data.preview_texts : [];
+				if (Array.isArray(data?.preview_posts_full) && data.preview_posts_full.length) {
+					websitePreviewAll = data.preview_posts_full.map((p: any) => `${p.title || 'Untitled'}\n\n${p.text || ''}`);
+				} else {
+					websitePreviewAll = Array.isArray(data?.preview_texts) ? data.preview_texts : [];
+				}
 				websiteLoaded = true;
 				if (data?.url) websiteUrl = data.url;
 			}
@@ -503,8 +466,8 @@
 </script>
 
 <div class="min-h-screen bg-white p-6">
-	<div class="mx-auto max-w-7xl">
-		<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+	<div class="mx-auto max-w-[1800px]">
+		<div class="grid grid-cols-1 gap-6 items-stretch lg:grid-cols-[560px_1120px]">
 			<!-- LEFT COLUMN: Your Sources -->
 			<div class="space-y-4">
 				<div class="rounded-md border border-gray-200 bg-white p-4">
@@ -547,26 +510,9 @@
 						{#if linkedinError}
 							<p class="text-xs text-red-600">{linkedinError}</p>
 						{/if}
-						<div class="flex gap-2">
-							<input class="input input-bordered w-full" type="url" placeholder="www.trustpilot.com/review/example.com" bind:value={trustpilotUrl} />
-							<button class="btn btn-neutral" onclick={scanTrustpilot} disabled={trustpilotLoading || !trustpilotUrl}>
-								{#if trustpilotLoading}
-									<span class="loading loading-spinner loading-sm"></span>
-									Scanning
-								{:else}
-									Scan Trustpilot
-								{/if}
-							</button>
-						</div>
-						{#if trustpilotError}
-							<p class="text-xs text-red-600">{trustpilotError}</p>
-						{/if}
 						<div class="flex items-center gap-2">
 							{#if linkedinLoaded}
 								<button class="btn btn-xs" onclick={() => (showLinkedinPreview = true)}>View LinkedIn</button>
-							{/if}
-							{#if trustpilotLoaded}
-								<button class="btn btn-xs" onclick={() => (showTrustpilotPreview = true)}>View Trustpilot</button>
 							{/if}
 							{#if websiteUrl}
 								<button class="btn btn-xs" onclick={() => (showWebsitePreview = true)}>View Website</button>
@@ -662,12 +608,12 @@
 			</div>
 
 			<!-- RIGHT COLUMN: Prompt and Output -->
-			<div class="space-y-4">
-				<div class="rounded-md border border-gray-200 bg-white p-4">
+			<div class="flex flex-col gap-4 h-full">
+				<div class="rounded-md border border-gray-200 bg-white p-4 flex flex-col flex-1">
 					<h2 class="mb-2 text-lg font-semibold">Write your prompt:</h2>
-					<textarea class="textarea textarea-bordered w-full min-h-48" placeholder="Describe what you want to generate…" bind:value={userPrompt} />
+					<textarea class="textarea textarea-bordered w-full flex-1 min-h-0" placeholder="Describe what you want to generate…" bind:value={userPrompt} />
 					<div class="mt-2 flex justify-end">
-						<button class="btn btn-neutral" onclick={submitPrompt} disabled={generating}>
+						<button class="btn btn-neutral" onclick={generate} disabled={generating}>
 							{#if generating}
 								<span class="loading loading-spinner loading-sm"></span>
 								Generating
@@ -678,16 +624,16 @@
 					</div>
 				</div>
 
-				<div class="rounded-md border border-gray-200 bg-white p-4">
+				<div class="rounded-md border border-gray-200 bg-white p-4 flex flex-col flex-1">
 					<h2 class="mb-2 text-lg font-semibold">Your generated content</h2>
-					<textarea class="textarea textarea-bordered w-full min-h-64" placeholder="Output will appear here…" bind:value={outputText} readonly />
+					<textarea class="textarea textarea-bordered w-full flex-1 min-h-0" placeholder="Output will appear here…" bind:value={outputText} readonly />
 					<div class="mt-2 flex items-center justify-end gap-2">
 						{#if copySuccess}
 							<span class="text-xs text-green-600">Copied!</span>
 						{/if}
 						<button class="btn" onclick={copyOutput} disabled={!hasOutput}>Copy</button>
 						<button class="btn" onclick={downloadOutput} disabled={!hasOutput}>Download</button>
-						{#if hasOutput && (usedLinkedIn || usedTrustpilot || (auditData?.similar_examples && auditData.similar_examples.length))}
+						{#if hasOutput && (usedLinkedIn || (auditData?.similar_examples && auditData.similar_examples.length))}
 							<button class="btn" onclick={() => (showContextAudit = true)}>Used context</button>
 						{/if}
 					</div>
@@ -746,11 +692,16 @@
 
 {#if showLinkedinPreview && linkedinLoaded}
 <dialog class="modal modal-open">
-	<div class="modal-box max-w-2xl">
+	<div class="modal-box max-w-3xl">
 		<h3 class="font-bold text-lg mb-2">LinkedIn context preview</h3>
-		<p class="text-xs opacity-70 mb-3">First 800 characters shown.</p>
-		<div class="max-h-96 overflow-y-auto">
-			<p class="whitespace-pre-wrap text-sm">{linkedinPreview || 'No preview available.'}</p>
+		<div class="mb-3 flex items-center gap-2 text-xs opacity-70">
+			<span>{linkedinUrl}</span>
+			{#if linkedinFull}
+				<span>({linkedinFull.length} chars)</span>
+			{/if}
+		</div>
+		<div class="max-h-[70vh] overflow-y-auto">
+			<p class="whitespace-pre-wrap text-sm">{linkedinFull || linkedinPreview || 'No preview available.'}</p>
 		</div>
 		<div class="modal-action">
 			<button class="btn" onclick={() => (showLinkedinPreview = false)}>Close</button>
@@ -758,32 +709,6 @@
 	</div>
 	<form method="dialog" class="modal-backdrop">
 		<button onclick={() => (showLinkedinPreview = false)}>close</button>
-	</form>
-</dialog>
-{/if}
-
-{#if showTrustpilotPreview && trustpilotLoaded}
-<dialog class="modal modal-open">
-	<div class="modal-box max-w-3xl">
-		<h3 class="font-bold text-lg mb-2">Trustpilot reviews preview</h3>
-		<div class="max-h-96 overflow-y-auto space-y-2">
-			{#if trustpilotPreviewAll?.length}
-				{#each trustpilotPreviewAll as t, i}
-					<div class="rounded-md border border-gray-200 bg-white p-3">
-						<p class="text-xs opacity-70 mb-1">Review {i + 1}</p>
-						<p class="whitespace-pre-wrap text-sm">{t}</p>
-					</div>
-				{/each}
-			{:else}
-				<p class="opacity-70">No preview available.</p>
-			{/if}
-		</div>
-		<div class="modal-action">
-			<button class="btn" onclick={() => (showTrustpilotPreview = false)}>Close</button>
-		</div>
-	</div>
-	<form method="dialog" class="modal-backdrop">
-		<button onclick={() => (showTrustpilotPreview = false)}>close</button>
 	</form>
 </dialog>
 {/if}

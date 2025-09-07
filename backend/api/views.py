@@ -6,10 +6,9 @@ from .serializers import (
     BrandGuidelineSerializer,
     UploadedCampaignSerializer,
     LinkedInScrapeSerializer,
-    TrustpilotScrapeSerializer,
     WebsiteScrapeSerializer,
 )
-from .models import BrandGuideline, UploadedCampaign, LinkedInScrape, TrustpilotScrape, WebsiteScrape
+from .models import BrandGuideline, UploadedCampaign, LinkedInScrape, WebsiteScrape
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -24,6 +23,13 @@ from typing import Any
 import requests as http_requests
 import re
 import html as html_lib
+from urllib.parse import urljoin, urlparse, urlunparse
+
+# Robust HTML decoding and extraction
+from charset_normalizer import from_bytes as cn_from_bytes
+from bs4 import BeautifulSoup
+import trafilatura
+import ftfy
 
 
 @api_view(["POST"])
@@ -354,6 +360,8 @@ def linkedin_scrape(request: Request) -> Response:
 
     data = request.data or {}
     url = (data.get("url") or "").strip()
+    # Tolerate leading '@' copy-pastes
+    url = url.lstrip('@ ')
     # tolerate leading '@' copy-pastes
     url = url.lstrip('@ ')
     if not url or "linkedin.com" not in url:
@@ -430,7 +438,14 @@ def linkedin_scrape(request: Request) -> Response:
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def trustpilot_scrape(request: Request) -> Response:
-    """Fetch a Trustpilot company URL and store extracted review text for the user."""
+    """Fetch a Trustpilot company URL and store extracted, high-quality review text for the user.
+    Strategy:
+      1) Normalize URL and prefer recency sort
+      2) Try extracting reviews from Next.js __NEXT_DATA__ JSON
+      3) Fallback to JSON-LD scripts with "review" arrays
+      4) Fallback to DOM heuristics
+      5) Crawl first 2-3 pages to collect more reviews
+    """
     if request.method == "GET":
         obj = TrustpilotScrape.objects.filter(user=request.user).order_by("-created_at").first()
         if not obj:
@@ -441,70 +456,278 @@ def trustpilot_scrape(request: Request) -> Response:
 
     data = request.data or {}
     url = (data.get("url") or "").strip()
-    if not url or "trustpilot.com" not in url:
+    if not url or "trustpilot." not in url:
         return Response({"error": "Please provide a valid Trustpilot URL."}, status=400)
     if not (url.startswith("http://") or url.startswith("https://")):
         url = "https://" + url
 
-    try:
-        resp = http_requests.get(
-            url,
-            timeout=10,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-            },
-        )
-        if not resp.ok:
-            return Response({"error": f"Failed to fetch page: {resp.status_code}"}, status=400)
-        html = resp.text or ""
-    except Exception as e:
-        return Response({"error": str(e)}, status=400)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "da-DK,da;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
 
-    # Heuristic extraction similar to LinkedIn, tuned for reviews
-    def _extract_reviews(doc: str) -> str:
-        if not doc:
-            return ""
-        doc = re.sub(r"<script[\s\S]*?</script>", " ", doc, flags=re.IGNORECASE)
-        doc = re.sub(r"<style[\s\S]*?</style>", " ", doc, flags=re.IGNORECASE)
-        doc = re.sub(r"<br\s*/?>", "\n", doc, flags=re.IGNORECASE)
-        doc = re.sub(r"</p>", "\n", doc, flags=re.IGNORECASE)
-        doc = re.sub(r"<[^>]+>", " ", doc)
-        doc = html_lib.unescape(doc)
-        # basic segmentation
-        lines = [re.sub(r"\s+", " ", ln).strip() for ln in doc.split("\n")]
-        lines = [ln for ln in lines if ln]
-        keep = []
-        for ln in lines:
-            # ignore nav/footer/legal
-            if re.search(r"Trustpilot|Log in|Sign up|Categories|Business|Claimed|Cookies|Privacy|Terms", ln, re.IGNORECASE):
+    def fetch(u: str) -> str:
+        r = http_requests.get(u, headers=headers, timeout=20)
+        raw = r.content or b""
+        try:
+            best = cn_from_bytes(raw).best()
+            text = best.output() if best else (r.text or "")
+        except Exception:
+            text = r.text or ""
+        return ftfy.fix_text(text)
+
+    def add_param(u: str, key: str, value: str) -> str:
+        from urllib.parse import urlparse, urlencode, parse_qsl, urlunparse
+        p = urlparse(u)
+        q = dict(parse_qsl(p.query))
+        q[key] = value
+        return urlunparse((p.scheme, p.netloc, p.path, p.params, urlencode(q), p.fragment))
+
+    def extract_from_next_data(html: str) -> list[dict]:
+        # Prefer robust DOM lookup over brittle regex
+        s = BeautifulSoup(html, "lxml")
+        tag = s.find("script", id="__NEXT_DATA__")
+        if not tag or not tag.string:
+            return []
+        try:
+            obj = json.loads(tag.string)
+        except Exception:
+            return []
+        reviews = []
+        # Generic recursive finder for review-like nodes
+        def rec(node):
+            try:
+                if isinstance(node, dict):
+                    # common trustpilot fields
+                    text = node.get("text") or node.get("bodyText") or node.get("reviewText") or node.get("content")
+                    if isinstance(text, str) and len(text.strip()) > 60:
+                        out = {"text": text}
+                        if node.get("rating"):
+                            out["rating"] = node.get("rating")
+                        if node.get("ratingValue"):
+                            out["rating"] = node.get("ratingValue")
+                        if node.get("createdAt"):
+                            out["date"] = node.get("createdAt")
+                        if node.get("consumer") and isinstance(node.get("consumer"), dict):
+                            nm = node["consumer"].get("displayName") or node["consumer"].get("name")
+                            if nm:
+                                out["author"] = nm
+                        reviews.append(out)
+                    for v in node.values():
+                        rec(v)
+                elif isinstance(node, list):
+                    for v in node:
+                        rec(v)
+            except Exception:
+                return
+        rec(obj)
+        # Try a few likely paths
+        paths = [
+            ["props", "pageProps", "businessUnit", "reviews"],
+            ["props", "pageProps", "reviews"],
+            ["props", "pageProps", "entities", "reviews"],
+        ]
+        for path in paths:
+            cur = obj
+            ok = True
+            for k in path:
+                if isinstance(cur, dict) and k in cur:
+                    cur = cur[k]
+                else:
+                    ok = False
+                    break
+            if ok:
+                if isinstance(cur, dict):
+                    # entities map
+                    for rv in cur.values():
+                        if isinstance(rv, dict):
+                            reviews.append(rv)
+                elif isinstance(cur, list):
+                    reviews.extend([rv for rv in cur if isinstance(rv, dict)])
+        return reviews
+
+    def extract_from_ld_json(soup: BeautifulSoup) -> list[dict]:
+        out = []
+        for tag in soup.find_all("script", type="application/ld+json"):
+            try:
+                data_json = json.loads(tag.string or "{}")
+            except Exception:
                 continue
-            if len(ln) < 20:
+            arr = []
+            if isinstance(data_json, dict) and "review" in data_json and isinstance(data_json["review"], list):
+                arr = data_json["review"]
+            elif isinstance(data_json, list):
+                for it in data_json:
+                    if isinstance(it, dict) and "review" in it and isinstance(it["review"], list):
+                        arr.extend(it["review"])
+            for rv in arr:
+                if isinstance(rv, dict):
+                    out.append(rv)
+        return out
+
+    def extract_from_dom(soup: BeautifulSoup) -> list[dict]:
+        reviews = []
+        # Look for microdata
+        for art in soup.find_all(attrs={"itemtype": re.compile("Review$", re.I)}):
+            body = art.find(attrs={"itemprop": "reviewBody"})
+            rating = art.find(attrs={"itemprop": "ratingValue"})
+            author = art.find(attrs={"itemprop": "author"})
+            date = art.find(attrs={"itemprop": "datePublished"})
+            text = (body.get_text(" ", strip=True) if body else "").strip()
+            if not text:
                 continue
-            keep.append(ln)
-        text = "\n".join(keep)
-        return text.strip()
+            reviews.append({
+                "text": text,
+                "rating": (rating.get_text(strip=True) if rating else None),
+                "author": (author.get_text(strip=True) if author else None),
+                "date": (date.get_text(strip=True) if date else None),
+            })
+        if reviews:
+            return reviews
+        # Heuristic by attributes/classes commonly used by Trustpilot
+        candidates = []
+        candidates.extend(soup.select('[data-service-review-id]'))
+        candidates.extend(soup.select('[data-review-id]'))
+        # fallback to likely class name patterns
+        for div in soup.find_all(["article", "section", "div"]):
+            cl = " ".join(div.get("class") or [])
+            if re.search(r"review|ReviewCard|styles_reviewCard", cl, re.I):
+                candidates.append(div)
+        # de-dup candidates
+        seen_nodes = set()
+        uniq_candidates = []
+        for c in candidates:
+            key = id(c)
+            if key in seen_nodes:
+                continue
+            seen_nodes.add(key)
+            uniq_candidates.append(c)
+        for c in uniq_candidates:
+            txt = re.sub(r"\s+", " ", c.get_text(" ", strip=True)).strip()
+            if txt and len(txt) > 80:
+                reviews.append({"text": txt})
+        return reviews
 
-    text = _extract_reviews(html)
-    if not text:
-        return Response({"error": "No review content could be extracted from this page."}, status=400)
-    if len(text) > 20000:
-        text = text[:20000]
+    def is_bot_challenge(html: str) -> bool:
+        return bool(re.search(r"are you human|verify you are human|captcha", html, re.I))
 
-    obj = TrustpilotScrape.objects.create(user=request.user, url=url, content=text)
-    data = TrustpilotScrapeSerializer(obj).data
-    data["preview_texts"] = text.split("\n")[:20]
-    return Response(data, status=201)
+    # Crawl a few pages
+    pages = [url]
+    # Prefer recency
+    pages[0] = add_param(pages[0], "sort", "recency")
+    pages[0] = add_param(pages[0], "languages", "da")
+    for i in range(2, 4):  # pages 2-3
+        pages.append(add_param(pages[0], "page", str(i)))
+
+    collected: list[dict] = []
+    last_html = ""
+    for pu in pages:
+        try:
+            html = fetch(pu)
+            last_html = html or last_html
+        except Exception:
+            continue
+        if is_bot_challenge(html):
+            # Return informative message without failing hard
+            return Response({"url": url, "error": "Trustpilot presented a bot challenge. Please try again later or paste key reviews manually."}, status=200)
+        soup = BeautifulSoup(html, "lxml")
+        reviews = extract_from_next_data(html)
+        if not reviews:
+            reviews = extract_from_ld_json(soup)
+        if not reviews:
+            reviews = extract_from_dom(soup)
+        for rv in reviews:
+            text = str(rv.get("text") or rv.get("bodyText") or rv.get("title") or "").strip()
+            if not text:
+                continue
+            rating = rv.get("rating") or (rv.get("ratingValue") if isinstance(rv.get("ratingValue"), str) else None)
+            date = rv.get("dates") or rv.get("date") or rv.get("createdAt")
+            author = rv.get("consumer") or rv.get("author")
+            if isinstance(author, dict):
+                author = author.get("displayName") or author.get("name")
+            entry = {
+                "text": ftfy.fix_text(text),
+                "rating": rating,
+                "date": date,
+                "author": author,
+            }
+            collected.append(entry)
+        if len(collected) >= 60:
+            break
+
+    # Deduplicate by text
+    uniq = []
+    seen = set()
+    for rv in collected:
+        t = rv["text"]
+        key = t[:100]
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(rv)
+
+    if not uniq:
+        # Final fallback: extract visible page text so user can at least inspect something
+        if not last_html:
+            return Response({"url": url, "error": "No review content could be extracted from this page."}, status=200)
+        s2 = BeautifulSoup(last_html, "lxml")
+        for t in s2(["script", "style", "noscript"]):
+            t.decompose()
+        fallback_text = re.sub(r"\s+", " ", s2.get_text(" ", strip=True)).strip()
+        if len(fallback_text) > 500:
+            full_text = fallback_text[:20000]
+            obj = TrustpilotScrape.objects.create(user=request.user, url=url, content=full_text)
+            data_resp = TrustpilotScrapeSerializer(obj).data
+            # Provide a few slices for preview
+            data_resp["preview_texts"] = [full_text[i:i+600] for i in range(0, min(len(full_text), 7200), 600)]
+            return Response(data_resp, status=201)
+        # Return gracefully so UI can display message without failing
+        return Response({"url": url, "error": "No review content could be extracted from this page."}, status=200)
+
+    # Compose a high-quality text block
+    lines = []
+    for i, rv in enumerate(uniq[:50], start=1):
+        meta = []
+        if rv.get("rating"):
+            meta.append(f"{rv['rating']}★")
+        if rv.get("author"):
+            meta.append(str(rv["author"]))
+        if rv.get("date"):
+            meta.append(str(rv["date"]))
+        suffix = f" ({', '.join(meta)})" if meta else ""
+        lines.append(f"Review {i}\n" + rv["text"] + suffix)
+    full_text = "\n\n".join(lines)
+    if len(full_text) > 20000:
+        full_text = full_text[:20000]
+
+    obj = TrustpilotScrape.objects.create(user=request.user, url=url, content=full_text)
+    data_resp = TrustpilotScrapeSerializer(obj).data
+    data_resp["preview_texts"] = [rv["text"][:600] for rv in uniq[:12]]
+    return Response(data_resp, status=201)
 
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def website_scrape(request: Request) -> Response:
-    """Given a blog index URL, discover post links, fetch each, chunk and index via vectorstore."""
+    """Given a blog index URL, robustly discover post links, fetch each, extract full main content,
+    store full posts for auditing, and index cleaned text via vectorstore for RAG."""
     if request.method == "GET":
         obj = WebsiteScrape.objects.filter(user=request.user).order_by("-created_at").first()
         if not obj:
             return Response({"detail": "No Website scrape found"}, status=204)
         data_resp = WebsiteScrapeSerializer(obj).data
+        # include lightweight previews of posts
+        if isinstance(obj.posts, list) and obj.posts:
+            data_resp["preview_posts"] = [
+                {"url": p.get("url"), "title": p.get("title"), "sample": (p.get("text") or "")[:800]}
+                for p in obj.posts[:10]
+            ]
+            # also include a small set of full posts for UI auditing
+            data_resp["preview_posts_full"] = [
+                {"url": p.get("url"), "title": p.get("title"), "text": p.get("text")}
+                for p in obj.posts[:5]
+            ]
         # collect a small sample of recent website chunks
         from vectorstore.models import VectorizedChunk
         chunks = list(
@@ -516,67 +739,253 @@ def website_scrape(request: Request) -> Response:
         return Response(data_resp)
 
     data = request.data or {}
-    url = (data.get("url") or "").strip()
+    raw_url = (data.get("url") or "").strip()
+    # Normalize common paste issues
+    url = raw_url.strip().strip("'\"")
+    url = url.rstrip(").,; \t\r\n")
     if not url:
         return Response({"error": "Please provide a valid website URL."}, status=400)
+    if url.startswith("www."):
+        url = "https://" + url
     if not (url.startswith("http://") or url.startswith("https://")):
         url = "https://" + url
+    # IDN punycode for non-ASCII domains
+    try:
+        p = urlparse(url)
+        if p.netloc:
+            netloc_idna = p.netloc.encode("idna").decode("ascii")
+            url = urlunparse((p.scheme, netloc_idna, p.path or "", p.params or "", p.query or "", p.fragment or ""))
+    except Exception:
+        pass
+
+    def fetch_html(u: str) -> str:
+        # Try a few strategies: https verify on, https verify off, http
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        attempts = []
+        attempts.append((u, True))
+        if u.startswith("https://"):
+            attempts.append((u, False))
+            attempts.append(("http://" + u[len("https://"):], True))
+        else:
+            attempts.append((u, False))
+        last_exc = None
+        for target, verify in attempts:
+            try:
+                r = http_requests.get(target, timeout=25, headers=headers, verify=verify)
+                # proceed even if status is non-2xx
+                raw = r.content or b""
+                best = None
+                try:
+                    best = cn_from_bytes(raw).best()
+                except Exception:
+                    best = None
+                decoded = best.output() if best else None
+                text = decoded if decoded is not None else (r.text or "")
+                # Ensure we always pass a str into ftfy
+                if isinstance(text, bytes):
+                    try:
+                        text = text.decode(getattr(best, "encoding", "utf-8") or "utf-8", errors="replace")
+                    except Exception:
+                        text = text.decode("utf-8", errors="replace")
+                try:
+                    text = ftfy.fix_text(text)
+                except Exception:
+                    # If ftfy struggles, return decoded text as-is
+                    pass
+                return text
+            except Exception as e:
+                last_exc = e
+                continue
+        if last_exc:
+            raise last_exc
+        return ""
+        # Some sites return non-2xx to bots but still include readable HTML; proceed regardless of status.
+        raw = r.content or b""
+        decoded = None
+        try:
+            best = cn_from_bytes(raw).best()
+            decoded = best.output() if best else None
+        except Exception:
+            decoded = None
+        text = decoded or (r.text or "")
+        # fix mojibake, ensure unicode normalization (handles Danish characters)
+        text = ftfy.fix_text(text)
+        return text
+
+    def fetch_sitemap_candidates(base_url: str) -> list[str]:
+        """Attempt to discover posts via common sitemap locations."""
+        sitemap_urls = []
+        try:
+            p = urlparse(base_url)
+            origin = f"{p.scheme}://{p.netloc}"
+            sitemap_urls = [
+                origin + "/sitemap.xml",
+                origin + "/blog/sitemap.xml",
+                origin + "/sitemap_index.xml",
+            ]
+        except Exception:
+            pass
+        found: list[str] = []
+        for sm in sitemap_urls:
+            try:
+                xml_text = fetch_html(sm)
+                if not xml_text:
+                    continue
+                sx = BeautifulSoup(xml_text, "xml")
+                for loc in sx.find_all("loc"):
+                    href = (loc.text or "").strip()
+                    if not href:
+                        continue
+                    low = href.lower()
+                    if any(seg in low for seg in ["blog", "post", "article", "news"]):
+                        found.append(href)
+            except Exception:
+                continue
+        return found
 
     try:
-        resp = http_requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        if not resp.ok:
-            return Response({"error": f"Failed to fetch page: {resp.status_code}"}, status=400)
-        html = resp.text or ""
+        index_html = fetch_html(url)
     except Exception as e:
-        return Response({"error": str(e)}, status=400)
+        # Try sitemap discovery as fallback
+        sitemap_found = fetch_sitemap_candidates(url)
+        if not sitemap_found:
+            return Response({"error": f"Could not fetch page and no sitemap found for {url}. {e}"}, status=200)
+        index_html = ""
 
-    # naive link extraction to blog posts (looks for /blog/ or article links)
-    links = re.findall(r"href=\"([^\"]+)\"", html)
-    def _abs(u: str) -> str:
-        if u.startswith("http://") or u.startswith("https://"):
-            return u
-        from urllib.parse import urljoin
-        return urljoin(url, u)
+    # Discover post links using DOM signals
+    soup = BeautifulSoup(index_html, "lxml")
+    candidates: list[str] = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        full = urljoin(url, href)
+        path = urlparse(full).path.lower()
+        if any(seg in path for seg in [
+            "blog", "post", "article", "news",
+            # Common Danish sections
+            "nyheder", "artikler", "viden"
+        ]):
+            candidates.append(full)
 
-    cand = []
-    for ln in links:
-        if any(k in ln.lower() for k in ["/blog/", "/posts/", "/article", "/news/"]):
-            cand.append(_abs(ln))
-    # de-dup and cap
-    seen = set()
+    # Fallback: links inside <article>, headings, or pagination blocks
+    if not candidates:
+        for art in soup.find_all(["main", "article", "section"]):
+            for a in art.find_all("a", href=True):
+                href = a["href"].strip()
+                full = urljoin(url, href)
+                path = urlparse(full).path.lower()
+                if any(seg in path for seg in [
+                    "blog", "post", "article", "news",
+                    "nyheder", "artikler", "viden"
+                ]):
+                    candidates.append(full)
+
+    # Fallback 2: RSS/Atom feeds advertised in <link rel="alternate"> if no obvious post links
+    if not candidates:
+        for l in soup.find_all("link", rel=True, href=True):
+            rels = " ".join(l.get("rel") or [])
+            typ = (l.get("type") or "").lower()
+            if "alternate" in rels.lower() and any(x in typ for x in ("rss", "atom", "xml")):
+                feed_url = urljoin(url, l["href"])
+                try:
+                    feed_html = fetch_html(feed_url)
+                    feed_soup = BeautifulSoup(feed_html, "xml")
+                    for item in feed_soup.find_all(["item", "entry"]):
+                        link_tag = item.find("link")
+                        href = None
+                        if link_tag and link_tag.has_attr("href"):
+                            href = link_tag["href"]
+                        elif link_tag and link_tag.text:
+                            href = link_tag.text
+                        if href:
+                            candidates.append(urljoin(url, href.strip()))
+                except Exception:
+                    pass
+
+    # Fallback 3: sitemaps
+    if not candidates:
+        candidates = fetch_sitemap_candidates(url)
+
+    # Deduplicate while preserving order and limit
+    seen: set[str] = set()
     post_urls: list[str] = []
-    for c in cand:
+    # Heuristic: prefer likely article URLs and exclude category/index pages
+    def looks_like_article(u: str) -> bool:
+        pth = urlparse(u).path.strip("/")
+        parts = [seg for seg in pth.split("/") if seg]
+        if not parts:
+            return False
+        # require depth >= 2 for /blog/<slug>
+        if "blog" in parts and len(parts) < 2:
+            return False
+        last = parts[-1]
+        # article slugs tend to contain hyphens and be longer than 4 chars
+        if len(last) >= 5 and ("-" in last or any(ch.isdigit() for ch in last)):
+            return True
+        # fallback to allow other structures
+        return len(parts) >= 3
+
+    filtered = [c for c in candidates if looks_like_article(c)] or candidates
+
+    for c in filtered:
         if c not in seen:
             seen.add(c)
             post_urls.append(c)
-        if len(post_urls) >= 15:
+        if len(post_urls) >= 20:
             break
 
-    # fetch each post, extract text and index via vectorstore ingest
+    if not candidates:
+        # Return gracefully with message so UI can show it
+        return Response({"url": url, "error": "No blog-like links were discovered on this page or its sitemaps."}, status=200)
+
+    # Before ingesting new site, delete previous website scrapes and their vectors for this user
+    from vectorstore.models import VectorizedChunk
+    WebsiteScrape.objects.filter(user=request.user).delete()
+    VectorizedChunk.objects.filter(user=request.user, source_type="website").delete()
+
+    # fetch each post, extract main content and index via vectorstore ingest
     from vectorstore.utils import sentence_split, text_to_vector
     from vectorstore.models import VectorizedChunk
 
-    # create WebsiteScrape record first to associate chunks
-    obj = WebsiteScrape.objects.create(user=request.user, url=url, post_urls=post_urls)
-
+    full_posts: list[dict] = []
     preview_texts: list[str] = []
+
     for purl in post_urls:
         try:
-            pr = http_requests.get(purl, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-            if not pr.ok:
-                continue
-            phtml = pr.text or ""
-            # very simple text extraction
-            ptext = re.sub(r"<script[\s\S]*?</script>", " ", phtml, flags=re.IGNORECASE)
-            ptext = re.sub(r"<style[\s\S]*?</style>", " ", ptext, flags=re.IGNORECASE)
-            ptext = re.sub(r"<br\s*/?>", "\n", ptext, flags=re.IGNORECASE)
-            ptext = re.sub(r"</p>", "\n", ptext, flags=re.IGNORECASE)
-            ptext = re.sub(r"<[^>]+>", " ", ptext)
-            ptext = html_lib.unescape(ptext)
-            ptext = re.sub(r"\s+", " ", ptext).strip()
+            phtml = fetch_html(purl)
+            # Prefer trafilatura's robust main-content extraction
+            extracted = trafilatura.extract(
+                phtml,
+                include_comments=False,
+                include_tables=False,
+                favor_recall=True,
+                url=purl,
+            )
+            if not extracted:
+                # fallback to visible-text via BeautifulSoup
+                s = BeautifulSoup(phtml, "lxml")
+                for tag in s(["script", "style", "noscript"]):
+                    tag.decompose()
+                text_nodes = s.get_text("\n")
+                extracted = re.sub(r"\s+", " ", text_nodes).strip()
+
+            # Normalize/fix text and cap to a reasonable size
+            ptext = ftfy.fix_text(extracted).strip()
             if not ptext:
                 continue
-            # ingest: we treat each discovered post as an "upload"-like unit for RAG
+
+            # Derive a reasonable title
+            st = BeautifulSoup(phtml, "lxml")
+            title_tag = st.find("h1") or st.find("title")
+            title = title_tag.get_text(strip=True) if title_tag else "Untitled"
+
+            # Collect post for auditing UI
+            full_posts.append({"url": purl, "title": title, "text": ptext})
+
+            # Ingest: treat each full post as multiple chunks
             chunks = sentence_split(ptext)
             for ch in chunks:
                 if not ch.strip():
@@ -584,7 +993,7 @@ def website_scrape(request: Request) -> Response:
                 VectorizedChunk.objects.create(
                     user=request.user,
                     source_type="website",
-                    source_id=obj.id,
+                    source_id=0,  # temporary; reassigned after obj exists
                     text=ch,
                     vector=text_to_vector(ch),
                 )
@@ -593,6 +1002,22 @@ def website_scrape(request: Request) -> Response:
         except Exception:
             continue
 
+    # Create WebsiteScrape record and backfill source_id on chunks belonging to this scrape
+    obj = WebsiteScrape.objects.create(user=request.user, url=url, post_urls=post_urls, posts=full_posts)
+
+    # Update chunks created above to reference the new obj.id
+    VectorizedChunk.objects.filter(user=request.user, source_type="website", source_id=0).update(source_id=obj.id)
+
     payload = WebsiteScrapeSerializer(obj).data
     payload["preview_texts"] = preview_texts
+    # lightweight previews of posts for UI auditing
+    payload["preview_posts"] = [
+        {"url": p["url"], "title": p["title"], "sample": p["text"][:800]}
+        for p in (full_posts[:10] if full_posts else [])
+    ]
+    # include a small number of full posts to inspect complete content
+    payload["preview_posts_full"] = [
+        {"url": p["url"], "title": p["title"], "text": p["text"]}
+        for p in (full_posts[:5] if full_posts else [])
+    ]
     return Response(payload, status=201)

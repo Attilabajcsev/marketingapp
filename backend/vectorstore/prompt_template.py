@@ -21,7 +21,6 @@ def build_generation_messages(
     content_rules: List[str],
     similar_campaigns: List[str],
     linkedin_context: List[str] | None = None,
-    trustpilot_context: List[str] | None = None,
     website_context: List[str] | None = None,
 ) -> list[dict[str, str]]:
     """
@@ -57,11 +56,7 @@ def build_generation_messages(
             ln_lines.append(f"Snippet {i}:\n" + txt.strip())
         opt_sections.append("\n\n".join(ln_lines))
 
-    if trustpilot_context:
-        tp_lines: List[str] = ["### Trustpilot Reviews (verbatim snippets)"]
-        for i, txt in enumerate(trustpilot_context[:5], start=1):
-            tp_lines.append(f"Review {i}:\n" + txt.strip())
-        opt_sections.append("\n\n".join(tp_lines))
+    # Trustpilot context removed
 
     if website_context:
         wb_lines: List[str] = ["### Website Blog Excerpts (RAG)"]

@@ -97,7 +97,7 @@ class TrustpilotScrapeSerializer(serializers.ModelSerializer):
 class WebsiteScrapeSerializer(serializers.ModelSerializer):
     class Meta:
         model = WebsiteScrape
-        fields = ["id", "url", "post_urls", "created_at"]
+        fields = ["id", "url", "post_urls", "posts", "created_at"]
         read_only_fields = ["id", "created_at"]
 
     def create(self, validated_data):

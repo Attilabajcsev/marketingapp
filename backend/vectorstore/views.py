@@ -9,7 +9,8 @@ from .utils import text_to_vector, sentence_split, rank_by_similarity
 from django.conf import settings
 import requests
 from api.models import BrandGuideline
-from api.models import TrustpilotScrape
+# Trustpilot support removed
+from api.models import WebsiteScrape
 from .prompt_template import build_generation_messages
 from api.models import LinkedInScrape
 
@@ -136,11 +137,12 @@ def generate(request: Request) -> Response:
             "id", "vector", "text", "source_id"
         )
     )
-    websites_chunks = list(
-        VectorizedChunk.objects.filter(user=request.user, source_type="website").values(
-            "id", "vector", "text", "source_id"
-        )
-    )
+    # Prefer the most recent website scrape's chunks to avoid mixing old sites
+    latest_ws = WebsiteScrape.objects.filter(user=request.user).order_by("-created_at").first()
+    website_chunks_qs = VectorizedChunk.objects.filter(user=request.user, source_type="website")
+    if latest_ws:
+        website_chunks_qs = website_chunks_qs.filter(source_id=latest_ws.id)
+    websites_chunks = list(website_chunks_qs.values("id", "vector", "text", "source_id"))
 
     rag_uploads: list[str] = []
     rag_uploads_examples: list[dict] = []
@@ -187,17 +189,10 @@ def generate(request: Request) -> Response:
     # Trim LinkedIn content to avoid overly large prompts
     linkedin_texts = [txt[:4000] for txt in linkedin_texts if isinstance(txt, str)]
 
-    trustpilot_texts = list(
-        TrustpilotScrape.objects.filter(user=request.user)
-        .order_by("-created_at")
-        .values_list("content", flat=True)[:1]
-    )
-    trustpilot_texts = [txt[:4000] for txt in trustpilot_texts if isinstance(txt, str)]
-
     used_linkedin = bool(linkedin_texts)
-    used_trustpilot = bool(trustpilot_texts)
+    used_trustpilot = False
     linkedin_context_preview = (linkedin_texts[0][:800] if used_linkedin else "")
-    trustpilot_context_preview = (trustpilot_texts[0][:800] if used_trustpilot else "")
+    trustpilot_context_preview = ""
     # Note: LinkedIn and Trustpilot are passed as separate context sections,
     # not merged into RAG lists
 
@@ -209,7 +204,7 @@ def generate(request: Request) -> Response:
         content_rules=rules,
         similar_campaigns=rag_uploads,
         linkedin_context=linkedin_texts if used_linkedin else [],
-        trustpilot_context=trustpilot_texts if used_trustpilot else [],
+        trustpilot_context=None,
         website_context=rag_websites,
     )
 
@@ -280,18 +275,24 @@ def generate(request: Request) -> Response:
             })
 
     # Fallback echo uses the constructed template context minimally
+    combined_similar = (rag_uploads + rag_websites)
     synthetic = "\n\n".join([
         "[Tone] " + " | ".join(tone) if tone else "",
         "[Terminology] " + " | ".join(terminology) if terminology else "",
         "[Style] " + " | ".join(style) if style else "",
         "[Rules] " + " | ".join(rules) if rules else "",
-        "[Similar] " + " | ".join(similar_texts) if similar_texts else "",
+        "[Similar] " + " | ".join(combined_similar) if combined_similar else "",
         "[Request] " + prompt,
     ])
     return Response({
         "reply": synthetic.strip(),
         "rag_uploads_examples": rag_uploads_examples,
         "rag_websites_examples": rag_websites_examples,
+        "website_scrape_used": ({
+            "id": latest_ws.id,
+            "url": latest_ws.url,
+            "created_at": latest_ws.created_at.isoformat(),
+        } if latest_ws else None),
         "used_linkedin": used_linkedin,
         "linkedin_context_preview": linkedin_context_preview,
         "used_trustpilot": used_trustpilot,

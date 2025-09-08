@@ -120,6 +120,7 @@ def generate(request: Request) -> Response:
     """
     data = request.data or {}
     prompt = (data.get("prompt") or "").strip()
+    content_type = (data.get("content_type") or "").strip().lower()
     top_k = int(data.get("top_k") or 5)
     if not prompt:
         return Response({"error": "Missing prompt"}, status=400)
@@ -198,6 +199,7 @@ def generate(request: Request) -> Response:
 
     messages = build_generation_messages(
         user_request=prompt,
+        content_type=content_type,
         tone_guidelines=tone,
         terminology_guidelines=terminology,
         style_guidelines=style,

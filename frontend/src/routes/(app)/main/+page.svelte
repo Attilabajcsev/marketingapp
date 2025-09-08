@@ -62,6 +62,7 @@
 	let userPrompt: string = $state('');
 	let outputText: string = $state('');
 	let generating: boolean = $state(false);
+	let contentType: 'linkedin' | 'facebook' | 'newsletter' = $state('linkedin');
 	let copySuccess: boolean = $state(false);
 	let hasOutput: boolean = $derived(!!outputText && outputText.trim().length > 0);
 	let linkedinUrl: string = $state('');
@@ -295,7 +296,7 @@
 				method: 'POST',
 				credentials: 'include',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ prompt, top_k: 5 })
+				body: JSON.stringify({ prompt, top_k: 5, content_type: contentType })
 			});
 			if (!res.ok) {
 				outputText = 'Error generating content.';
@@ -611,6 +612,14 @@
 			<div class="flex flex-col gap-4 h-full">
 				<div class="rounded-md border border-gray-200 bg-white p-4 flex flex-col flex-1">
 					<h2 class="mb-2 text-lg font-semibold">Write your prompt:</h2>
+					<div class="mb-2 flex items-center gap-2">
+						<label class="text-sm text-gray-600">Channel</label>
+						<select class="select select-bordered select-sm" bind:value={contentType}>
+							<option value="linkedin">LinkedIn post</option>
+							<option value="facebook">Facebook post</option>
+							<option value="newsletter">Newsletter</option>
+						</select>
+					</div>
 					<textarea class="textarea textarea-bordered w-full flex-1 min-h-0" placeholder="Describe what you want to generate…" bind:value={userPrompt} />
 					<div class="mt-2 flex justify-end">
 						<button class="btn btn-neutral" onclick={generate} disabled={generating}>
@@ -633,7 +642,7 @@
 						{/if}
 						<button class="btn" onclick={copyOutput} disabled={!hasOutput}>Copy</button>
 						<button class="btn" onclick={downloadOutput} disabled={!hasOutput}>Download</button>
-						{#if hasOutput && (usedLinkedIn || (auditData?.similar_examples && auditData.similar_examples.length))}
+						{#if hasOutput && (usedLinkedIn || (auditData?.rag_uploads_examples?.length || auditData?.rag_websites_examples?.length))}
 							<button class="btn" onclick={() => (showContextAudit = true)}>Used context</button>
 						{/if}
 					</div>

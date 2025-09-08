@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable, List
+from typing import Iterable, List, Optional
+import os
+import requests
 
 import numpy as np
 
@@ -58,4 +60,35 @@ def rank_by_similarity(query: str, vectors: list[tuple[int, list[float]]], texts
     sims.sort(key=lambda x: x[1], reverse=True)
     return [idx for idx, _ in sims[:top_k]]
 
+
+
+def fetch_web_results(query: str, max_results: int = 3, timeout: int = 12) -> list[dict]:
+    """
+    Lightweight web search via Serper.dev if SERPER_API_KEY is set.
+    Returns a list of { title, url, snippet }.
+    """
+    api_key = os.getenv("SERPER_API_KEY")
+    if not api_key or not query:
+        return []
+    try:
+        resp = requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"q": query, "num": max_results},
+            timeout=timeout,
+        )
+        if not resp.ok:
+            return []
+        data = resp.json()
+        items = data.get("organic") or []
+        out: list[dict] = []
+        for it in items[:max_results]:
+            out.append({
+                "title": it.get("title") or "",
+                "url": it.get("link") or "",
+                "snippet": it.get("snippet") or "",
+            })
+        return out
+    except Exception:
+        return []
 

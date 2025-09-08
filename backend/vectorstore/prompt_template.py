@@ -25,6 +25,8 @@ def build_generation_messages(
     linkedin_context: List[str] | None = None,
     trustpilot_context: List[str] | None = None,
     website_context: List[str] | None = None,
+    web_results: List[Dict[str, str]] | None = None,
+    web_search_directives: Dict[str, object] | None = None,
 ) -> list[dict[str, str]]:
     """
     Returns OpenAI chat messages with a dedicated system role and a user message
@@ -36,7 +38,7 @@ def build_generation_messages(
     """
 
     # Normalize/validate content type
-    allowed_types = {"linkedin", "facebook", "newsletter"}
+    allowed_types = {"linkedin", "facebook", "newsletter", "blog"}
     ct = (content_type or "").strip().lower()
     if ct not in allowed_types:
         ct = "linkedin"
@@ -76,6 +78,37 @@ def build_generation_messages(
             wb_lines.append(f"Uddrag {i}:\n" + txt.strip())
         opt_sections.append("\n\n".join(wb_lines))
 
+    if web_results:
+        wr_lines: List[str] = ["### Webresultater (eksterne kilder – faktatjek anbefales)"]
+        for i, item in enumerate(web_results[:3], start=1):
+            title = item.get("title", "")
+            url = item.get("url", "")
+            snippet = item.get("snippet", "")
+            wr_lines.append(f"Resultat {i}: {title}\n{url}\n{snippet}")
+        opt_sections.append("\n\n".join(wr_lines))
+
+    if web_search_directives:
+        d_company = str(web_search_directives.get("company") or "").strip()
+        d_links = web_search_directives.get("links") or []
+        if not isinstance(d_links, list):
+            d_links = []
+        links_block = "\n".join([f"- {str(u)}" for u in d_links if isinstance(u, str) and u]) if d_links else "(ingen)"
+        plan_lines: List[str] = [
+            "### Websøgeinstruktioner",
+            "- Prioritér officielle kilder: virksomhedens website og sociale profiler.",
+            "- Brug brugerens angivne links først.",
+            "- Supplér med faktuel baggrundsviden relevant for emnet.",
+            "- Indsaml kun verificerbar fakta, og medtag URL-kilder i svaret.",
+            "\nForeslåede søgeforespørgsler:",
+            f"- '{d_company} site:linkedin.com' og '{d_company} LinkedIn'" if d_company else "- 'site:linkedin.com' virksomhedsprofil",
+            f"- '{d_company} site:facebook.com'" if d_company else "- 'site:facebook.com' virksomhedsprofil",
+            f"- '{d_company} site:twitter.com OR site:x.com'" if d_company else "- 'site:x.com' virksomhedsprofil",
+            f"- 'site:{d_company.lower().replace(' ', '')}.dk' eller 'site:{d_company.lower().replace(' ', '')}.com'" if d_company else "- virksomhedens domæne med 'site:'",
+            "- Emnespecifikke fakta: definitioner, tal, og kilder med høj troværdighed.",
+            "\nBrugerangivne links (prioritér):\n" + links_block,
+        ]
+        opt_sections.append("\n".join(plan_lines))
+
     examples_section_lines: List[str] = ["### Lignende tidligere kampagner (kun til inspiration)"]
     if similar_campaigns:
         for i, txt in enumerate(similar_campaigns[:5], start=1):
@@ -85,14 +118,17 @@ def build_generation_messages(
     examples_section = "\n\n".join(examples_section_lines)
 
     # Channel-specific placeholders/examples
-    display_type_map = {"linkedin": "LinkedIn", "facebook": "Facebook", "newsletter": "Nyhedsbrev"}
+    display_type_map = {"linkedin": "LinkedIn", "facebook": "Facebook", "newsletter": "Nyhedsbrev", "blog": "Blog"}
     display_type = display_type_map.get(ct, ct.capitalize())
     channel_header = f"### Kanal for output\n- Type: {display_type}"
     # Use provided examples literally, but clarify they are for style/tone only.
     raw_examples = EXAMPLES_BY_CHANNEL.get(ct, [])
-    # Truncate examples to avoid huge prompts
-    truncated = [(ex[:1200] + ("…" if len(ex) > 1200 else "")) for ex in raw_examples][:5]
-    channel_examples = "### Eksempler for valgt kanal (kun stil/tone, kopier ikke fakta)\n" + "\n\n".join(truncated) if truncated else ""
+    # Build examples block. Keep full text for blogs; truncate other channels for safety.
+    if ct == "blog":
+        selected = raw_examples[:2]
+    else:
+        selected = [(ex[:1200] + ("…" if len(ex) > 1200 else "")) for ex in raw_examples][:5]
+    channel_examples = "### Eksempler for valgt kanal (kun stil/tone, kopier ikke fakta)\n" + "\n\n".join(selected) if selected else ""
     if ct == "linkedin":
         channel_instructions = (
             "- Optimér til LinkedIn: let at skimme, kortfattet og professionelt.\n"
@@ -105,11 +141,17 @@ def build_generation_messages(
             "- Foretræk 50–150 ord, medmindre andet er angivet.\n"
             "- Inkludér en tydelig CTA; brug eventuelle emojis sparsomt.\n"
         )
-    else:  # newsletter
+    elif ct == "newsletter":
         channel_instructions = (
             "- Optimér til e-mail/nyhedsbrev: tydelig emnelinje og preheader.\n"
             "- Skriv en kort brødtekst med én primær CTA.\n"
             "- Foretræk 120–300 ord, medmindre andet er angivet.\n"
+        )
+    else:  # blog
+        channel_instructions = (
+            "- Optimér til blog: klar struktur med overskrifter og afsnit.\n"
+            "- Indled med en tydelig problemformulering eller opsummering.\n"
+            "- Brug underoverskrifter og korte afsnit for læsbarhed.\n"
         )
 
     output_instructions = (

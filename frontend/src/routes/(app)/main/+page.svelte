@@ -62,7 +62,12 @@
 	let userPrompt: string = $state('');
 	let outputText: string = $state('');
 	let generating: boolean = $state(false);
-	let contentType: 'linkedin' | 'facebook' | 'newsletter' = $state('linkedin');
+	let contentType: 'linkedin' | 'facebook' | 'newsletter' | 'blog' = $state('linkedin');
+	let modelName: string = $state('gpt-4o-mini');
+	let useWeb: boolean = $state(false);
+	let showTrace: boolean = $state(false);
+	let webCompany: string = $state('');
+	let webLinksRaw: string = $state('');
 	let copySuccess: boolean = $state(false);
 	let hasOutput: boolean = $derived(!!outputText && outputText.trim().length > 0);
 	let linkedinUrl: string = $state('');
@@ -80,7 +85,7 @@
 	let showWebsitePreview: boolean = $state(false);
 	let websitePreviewAll: string[] = $state([]);
 	let showContextAudit: boolean = $state(false);
-	let auditData: { brand_guidelines?: any; prompt_messages?: any; rag_uploads_examples?: any[]; rag_websites_examples?: any[] } = $state({});
+	let auditData: { brand_guidelines?: any; prompt_messages?: any; rag_uploads_examples?: any[]; rag_websites_examples?: any[]; used_channel_examples?: { channel: string; count: number }; used_assistants_web?: boolean; assistant_steps?: any[]; web_results?: any[] } = $state({});
 	let ragUploadsExamples: { chunk_id: number; source_type: string; source_id: number; text: string }[] = $state([]);
 	let ragWebsitesExamples: { chunk_id: number; source_type: string; source_id: number; text: string }[] = $state([]);
 
@@ -296,7 +301,18 @@
 				method: 'POST',
 				credentials: 'include',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ prompt, top_k: 5, content_type: contentType })
+				body: JSON.stringify({
+					prompt,
+					top_k: 5,
+					content_type: contentType,
+					model: modelName,
+					use_web: useWeb,
+					web_company: webCompany,
+					user_links: webLinksRaw
+						.split(/\n|,/)
+						.map((s) => s.trim())
+						.filter((s) => !!s)
+				})
 			});
 			if (!res.ok) {
 				outputText = 'Error generating content.';
@@ -315,7 +331,11 @@
 				brand_guidelines: data.brand_guidelines,
 				prompt_messages: data.prompt_messages,
 				rag_uploads_examples: ragUploadsExamples,
-				rag_websites_examples: ragWebsitesExamples
+				rag_websites_examples: ragWebsitesExamples,
+				used_channel_examples: data.used_channel_examples,
+				used_assistants_web: Boolean(data.used_assistants_web),
+				assistant_steps: Array.isArray(data.assistant_steps) ? data.assistant_steps : [],
+				web_results: Array.isArray(data.web_results) ? data.web_results : []
 			};
 		} catch (e) {
 			console.error(e);
@@ -613,13 +633,38 @@
 				<div class="rounded-md border border-gray-200 bg-white p-4 flex flex-col flex-1">
 					<h2 class="mb-2 text-lg font-semibold">Write your prompt:</h2>
 					<div class="mb-2 flex items-center gap-2">
-						<label class="text-sm text-gray-600">Channel</label>
-						<select class="select select-bordered select-sm" bind:value={contentType}>
-							<option value="linkedin">LinkedIn post</option>
-							<option value="facebook">Facebook post</option>
-							<option value="newsletter">Newsletter</option>
-						</select>
+						<label class="text-sm text-gray-600">Kanal</label>
+						<div class="flex gap-2">
+							<button type="button" class={`btn btn-sm ${contentType==='linkedin'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='linkedin'}>LinkedIn</button>
+							<button type="button" class={`btn btn-sm ${contentType==='facebook'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='facebook'}>Facebook</button>
+							<button type="button" class={`btn btn-sm ${contentType==='newsletter'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='newsletter'}>Nyhedsbrev</button>
+							<button type="button" class={`btn btn-sm ${contentType==='blog'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='blog'}>Blog</button>
+						</div>
 					</div>
+					<div class="mb-2 grid grid-cols-1 md:grid-cols-3 gap-2 items-center">
+						<div class="flex items-center gap-2">
+							<label class="text-sm text-gray-600">Model</label>
+							<select class="select select-bordered select-sm" bind:value={modelName}>
+								<option value="gpt-4o-mini">gpt-4o-mini (fast)</option>
+								<option value="gpt-4o">gpt-4o</option>
+								<option value="o4-mini">o4-mini (reasoning)</option>
+							</select>
+						</div>
+						<label class="label cursor-pointer justify-start gap-2">
+							<input type="checkbox" class="toggle" bind:checked={useWeb} />
+							<span class="text-sm">Use web</span>
+						</label>
+						<label class="label cursor-pointer justify-start gap-2">
+							<input type="checkbox" class="toggle" bind:checked={showTrace} />
+							<span class="text-sm">Show trace</span>
+						</label>
+					</div>
+					{#if useWeb}
+						<div class="mb-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+							<input class="input input-bordered w-full" type="text" placeholder="Company name (for targeted web search)" bind:value={webCompany} />
+							<textarea class="textarea textarea-bordered w-full" placeholder="Links (comma or newline separated)" bind:value={webLinksRaw} />
+						</div>
+					{/if}
 					<textarea class="textarea textarea-bordered w-full flex-1 min-h-0" placeholder="Describe what you want to generate…" bind:value={userPrompt} />
 					<div class="mt-2 flex justify-end">
 						<button class="btn btn-neutral" onclick={generate} disabled={generating}>
@@ -642,7 +687,7 @@
 						{/if}
 						<button class="btn" onclick={copyOutput} disabled={!hasOutput}>Copy</button>
 						<button class="btn" onclick={downloadOutput} disabled={!hasOutput}>Download</button>
-						{#if hasOutput && (usedLinkedIn || (auditData?.rag_uploads_examples?.length || auditData?.rag_websites_examples?.length))}
+						{#if hasOutput && (usedLinkedIn || (auditData?.rag_uploads_examples?.length || auditData?.rag_websites_examples?.length || auditData?.used_channel_examples?.count || (useWeb && (auditData?.used_assistants_web || auditData?.web_results?.length))))}
 							<button class="btn" onclick={() => (showContextAudit = true)}>Used context</button>
 						{/if}
 					</div>
@@ -766,8 +811,23 @@
 				<pre class="whitespace-pre-wrap text-sm bg-base-200 p-2 rounded">{JSON.stringify(auditData.rag_websites_examples, null, 2)}</pre>
 			</div>
 			<div>
+				<h4 class="font-semibold mb-1">Kanal-eksempler (stil/tone)</h4>
+				<pre class="whitespace-pre-wrap text-sm bg-base-200 p-2 rounded">{JSON.stringify(auditData.used_channel_examples, null, 2)}</pre>
+			</div>
+			<div>
 				<h4 class="font-semibold mb-1">Prompt Template Messages</h4>
 				<pre class="whitespace-pre-wrap text-sm bg-base-200 p-2 rounded">{JSON.stringify(auditData.prompt_messages, null, 2)}</pre>
+			</div>
+			<div>
+				<h4 class="font-semibold mb-1">Assistants Web</h4>
+				<p class="text-sm">{auditData.used_assistants_web ? 'On' : 'Off'}</p>
+				{#if showTrace && auditData.assistant_steps?.length}
+					<pre class="whitespace-pre-wrap text-xs bg-base-200 p-2 rounded">{JSON.stringify(auditData.assistant_steps, null, 2)}</pre>
+				{/if}
+			</div>
+			<div>
+				<h4 class="font-semibold mb-1">Web results</h4>
+				<pre class="whitespace-pre-wrap text-sm bg-base-200 p-2 rounded">{JSON.stringify(auditData.web_results, null, 2)}</pre>
 			</div>
 		</div>
 		<div class="modal-action">

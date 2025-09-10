@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.request import Request
 
 from .models import VectorizedChunk
-from .utils import text_to_vector, sentence_split, rank_by_similarity, fetch_web_results
+from .utils import text_to_vector, sentence_split, rank_by_similarity, fetch_web_results, call_openai_responses, call_openai_chat_completions, normalize_model_name
 from django.conf import settings
 import requests
 from api.models import BrandGuideline
@@ -90,25 +90,30 @@ def chat(request: Request) -> Response:
     api_key = getattr(settings, "OPENAI_API_KEY", None)
     if api_key:
         try:
-            resp = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "gpt-3.5-turbo",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 64,
-                },
-                timeout=15,
+            # Minimal two-message exchange through Responses API, using default model
+            model = normalize_model_name("gpt-4o")
+            result = call_openai_responses(
+                model=model,
+                system_text="You are a concise helpful assistant.",
+                user_text=prompt,
+                max_output_tokens=128,
+                temperature=0.7,
             )
-            if resp.ok:
-                data = resp.json()
-                text = data["choices"][0]["message"]["content"]
-                return Response({"reply": text})
-            else:
-                return Response({"reply": f"LLM error, echoing: {prompt}", "error": resp.text})
+            if not result.get("ok"):
+                # Fallback to Chat Completions for resiliency
+                cc = call_openai_chat_completions(
+                    model=normalize_model_name("gpt-4o"),
+                    messages=[
+                        {"role": "system", "content": "You are a concise helpful assistant."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=128,
+                    temperature=0.7,
+                )
+                if cc.get("ok"):
+                    return Response({"reply": cc.get("text") or ""})
+                return Response({"reply": f"LLM error, echoing: {prompt}", "error": (result.get("error") or cc.get("error") or "unknown")})
+            return Response({"reply": result.get("text") or ""})
         except Exception as e:
             return Response({"reply": f"LLM error, echoing: {prompt}", "error": str(e)})
 
@@ -214,6 +219,29 @@ def generate(request: Request) -> Response:
     web_results = fetch_web_results(prompt, max_results=3) if use_web else []
     web_search_directives = {"company": web_company, "links": user_links} if use_web else None
 
+    # Reflect web toggle status in the audit trail and provide lightweight step tracing
+    used_assistants_web_flag = bool(use_web)
+    assistant_model_label = ("web+responses" if used_assistants_web_flag else None)
+    steps_raw: list[dict] = []
+    if used_assistants_web_flag:
+        query_hint = prompt[:120]
+        steps_raw = [
+            {
+                "type": "tool",
+                "name": "web_search",
+                "args": {
+                    "query": query_hint,
+                    "company": web_company,
+                    "user_links": user_links[:5],
+                },
+                "result_count": len(web_results),
+            },
+            {
+                "type": "compose",
+                "details": "Combine brand guidelines, RAG examples, and web results into final answer.",
+            },
+        ]
+
     messages = build_generation_messages(
         user_request=prompt,
         content_type=content_type,
@@ -240,265 +268,71 @@ def generate(request: Request) -> Response:
     api_key = getattr(settings, "OPENAI_API_KEY", None)
     if api_key:
         try:
-            if use_web:
-                # Use Assistants API with web search tool
-                sys_content = ""
-                usr_content = prompt
-                if messages and len(messages) >= 2:
-                    sys_content = messages[0].get("content", "")
-                    usr_content = messages[1].get("content", prompt)
+            # Unify on Responses API for all models
+            selected_model = normalize_model_name(model)
+            system_text = messages[0]["content"] if messages else ""
+            user_text = messages[1]["content"] if len(messages) > 1 else prompt
 
-                a_headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                }
-                # Create assistant (per-request, simplest). Some reasoning models are not supported for web tools, so map to a browsing-capable model.
-                assistants_model = model
-                if assistants_model.startswith("o"):
-                    assistants_model = "gpt-4o"
-                create_assistant = requests.post(
-                    "https://api.openai.com/v1/assistants",
-                    headers=a_headers,
-                    json={
-                        "model": assistants_model,
-                        "instructions": sys_content,
-                        "tools": [{"type": "web_search"}],
-                    },
-                    timeout=30,
+            result = call_openai_responses(
+                model=selected_model,
+                system_text=system_text,
+                user_text=user_text,
+                max_output_tokens=512,
+                temperature=0.7,
+                reasoning_effort=(reasoning_effort or None),
+                timeout=35,
+            )
+            if not result.get("ok"):
+                # Fallback to Chat Completions for non-reasoning models
+                fallback_model = selected_model if not selected_model.lower().startswith("o") else "gpt-4o"
+                cc = call_openai_chat_completions(
+                    model=fallback_model,
+                    messages=[
+                        {"role": "system", "content": system_text},
+                        {"role": "user", "content": user_text},
+                    ],
+                    max_tokens=512,
+                    temperature=0.7,
+                    timeout=35,
                 )
-                if not create_assistant.ok:
-                    raise RuntimeError(f"Assistants create failed: {create_assistant.text}")
-                assistant_id = create_assistant.json().get("id")
+                if cc.get("ok"):
+                    return Response({
+                        "reply": cc.get("text") or "",
+                        "rag_uploads_examples": rag_uploads_examples,
+                        "rag_websites_examples": rag_websites_examples,
+                        "web_results": web_results,
+                        "used_assistants_web": used_assistants_web_flag,
+                        "assistant_steps": steps_raw,
+                        "assistant_model": assistant_model_label,
+                        "used_linkedin": used_linkedin,
+                        "linkedin_context_preview": linkedin_context_preview,
+                        "used_trustpilot": used_trustpilot,
+                        "trustpilot_context_preview": trustpilot_context_preview,
+                        "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
+                        "brand_guidelines": brand_guidelines_out,
+                        "prompt_messages": messages,
+                        "selected_model": fallback_model,
+                    })
+                # Fall-through to error response below if both fail
 
-                # Create thread
-                create_thread = requests.post(
-                    "https://api.openai.com/v1/threads",
-                    headers=a_headers,
-                    json={},
-                    timeout=30,
-                )
-                if not create_thread.ok:
-                    raise RuntimeError(f"Thread create failed: {create_thread.text}")
-                thread_id = create_thread.json().get("id")
-
-                # Add user message
-                add_msg = requests.post(
-                    f"https://api.openai.com/v1/threads/{thread_id}/messages",
-                    headers=a_headers,
-                    json={"role": "user", "content": usr_content},
-                    timeout=30,
-                )
-                if not add_msg.ok:
-                    raise RuntimeError(f"Add message failed: {add_msg.text}")
-
-                # Create run
-                # Combine instructions with any web directives to steer browsing
-                combined_instructions = sys_content
-                if web_company or user_links:
-                    combined_instructions = (
-                        (sys_content + "\n\n") if sys_content else ""
-                    ) + "Følg websøgeinstruktionerne i prompten og prioriter officielle kilder og brugerens links."
-
-                create_run = requests.post(
-                    f"https://api.openai.com/v1/threads/{thread_id}/runs",
-                    headers=a_headers,
-                    json={"assistant_id": assistant_id, "instructions": combined_instructions},
-                    timeout=30,
-                )
-                if not create_run.ok:
-                    raise RuntimeError(f"Run create failed: {create_run.text}")
-                run_id = create_run.json().get("id")
-
-                # Poll run
-                import time
-                start = time.time()
-                reply_text = None
-                used_assistants_web = True
-                while time.time() - start < 45:
-                    get_run = requests.get(
-                        f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}",
-                        headers=a_headers,
-                        timeout=15,
-                    )
-                    if not get_run.ok:
-                        break
-                    status = get_run.json().get("status")
-                    if status == "completed":
-                        # Fetch messages
-                        msgs = requests.get(
-                            f"https://api.openai.com/v1/threads/{thread_id}/messages",
-                            headers=a_headers,
-                            params={"limit": 10},
-                            timeout=15,
-                        )
-                        if msgs.ok:
-                            data_msgs = msgs.json().get("data", [])
-                            for m in data_msgs:
-                                if m.get("role") == "assistant":
-                                    parts = m.get("content") or []
-                                    if parts and isinstance(parts, list):
-                                        first = parts[0]
-                                        # text content
-                                        txt = (first.get("text") or {}).get("value") if isinstance(first, dict) else None
-                                        if txt:
-                                            reply_text = txt
-                                            break
-                        # Fetch run steps for trace
-                        steps_raw = []
-                        steps_resp = requests.get(
-                            f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}/steps",
-                            headers=a_headers,
-                            params={"limit": 20},
-                            timeout=15,
-                        )
-                        if steps_resp.ok:
-                            steps_raw = steps_resp.json().get("data", [])
-                        break
-                    elif status in {"failed", "cancelled", "expired"}:
-                        break
-                    time.sleep(1.0)
-
-                if not reply_text:
-                    reply_text = "(Assistant run did not return a message)"
-
-                return Response({
-                    "reply": reply_text,
-                    "rag_uploads_examples": rag_uploads_examples,
-                    "rag_websites_examples": rag_websites_examples,
-                    "web_results": [],
-                    "used_assistants_web": used_assistants_web,
-                    "assistant_steps": steps_raw,
-                    "assistant_model": assistants_model,
-                    "used_linkedin": used_linkedin,
-                    "linkedin_context_preview": linkedin_context_preview,
-                    "used_trustpilot": used_trustpilot,
-                    "trustpilot_context_preview": trustpilot_context_preview,
-                    "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
-                    "brand_guidelines": brand_guidelines_out,
-                    "prompt_messages": messages,
-                    "selected_model": model,
-                })
-            else:
-                if model.startswith("o"):
-                    # Use Responses API for reasoning models
-                    resp = requests.post(
-                        "https://api.openai.com/v1/responses",
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "model": model,
-                            "reasoning": {"effort": reasoning_effort or "medium"},
-                            "input": [
-                                {"role": "system", "content": messages[0]["content"]},
-                                {"role": "user", "content": messages[1]["content"]},
-                            ],
-                            "max_output_tokens": 512,
-                            "temperature": 0.7,
-                        },
-                        timeout=30,
-                    )
-                    if resp.ok:
-                        data_r = resp.json()
-                        # Responses API returns output_text in a 'output' list or 'content'. Fallback parsing.
-                        out_text = None
-                        if "output" in data_r and isinstance(data_r["output"], list) and data_r["output"]:
-                            # find first text item
-                            for it in data_r["output"]:
-                                if isinstance(it, dict) and it.get("type") == "output_text":
-                                    out_text = it.get("text")
-                                    break
-                        if not out_text:
-                            # fallback: choices-like
-                            out_text = data_r.get("content") or ""
-                        return Response({
-                            "reply": out_text or "",
-                            "rag_uploads_examples": rag_uploads_examples,
-                            "rag_websites_examples": rag_websites_examples,
-                            "web_results": web_results,
-                            "used_assistants_web": False,
-                            "assistant_steps": [],
-                            "used_linkedin": used_linkedin,
-                            "linkedin_context_preview": linkedin_context_preview,
-                            "used_trustpilot": used_trustpilot,
-                            "trustpilot_context_preview": trustpilot_context_preview,
-                            "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
-                            "brand_guidelines": brand_guidelines_out,
-                            "prompt_messages": messages,
-                            "selected_model": model,
-                        })
-                    else:
-                        return Response({
-                            "reply": f"LLM error, echoing: {prompt}",
-                            "error": resp.text,
-                            "rag_uploads_examples": rag_uploads_examples,
-                            "rag_websites_examples": rag_websites_examples,
-                            "web_results": web_results,
-                            "used_assistants_web": False,
-                            "assistant_steps": [],
-                            "used_linkedin": used_linkedin,
-                            "linkedin_context_preview": linkedin_context_preview,
-                            "used_trustpilot": used_trustpilot,
-                            "trustpilot_context_preview": trustpilot_context_preview,
-                            "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
-                            "brand_guidelines": brand_guidelines_out,
-                            "prompt_messages": messages,
-                            "selected_model": model,
-                        })
-                else:
-                    # Standard Chat Completions for non-reasoning models
-                    resp = requests.post(
-                        "https://api.openai.com/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "model": model,
-                            "messages": messages,
-                            "max_tokens": 512,
-                            "temperature": 0.7,
-                        },
-                        timeout=30,
-                    )
-                    if resp.ok:
-                        data = resp.json()
-                        text = data["choices"][0]["message"]["content"]
-                        return Response({
-                            "reply": text,
-                            "rag_uploads_examples": rag_uploads_examples,
-                            "rag_websites_examples": rag_websites_examples,
-                            "web_results": web_results,
-                            "used_assistants_web": False,
-                            "assistant_steps": [],
-                            "used_linkedin": used_linkedin,
-                            "linkedin_context_preview": linkedin_context_preview,
-                            "used_trustpilot": used_trustpilot,
-                            "trustpilot_context_preview": trustpilot_context_preview,
-                            "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
-                            "brand_guidelines": brand_guidelines_out,
-                            "prompt_messages": messages,
-                            "selected_model": model,
-                        })
-                    else:
-                        return Response({
-                            "reply": f"LLM error, echoing: {prompt}",
-                            "error": resp.text,
-                            "rag_uploads_examples": rag_uploads_examples,
-                            "rag_websites_examples": rag_websites_examples,
-                            "web_results": web_results,
-                            "used_assistants_web": False,
-                            "assistant_steps": [],
-                            "used_linkedin": used_linkedin,
-                            "linkedin_context_preview": linkedin_context_preview,
-                            "used_trustpilot": used_trustpilot,
-                            "trustpilot_context_preview": trustpilot_context_preview,
-                            "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
-                            "brand_guidelines": brand_guidelines_out,
-                            "prompt_messages": messages,
-                            "selected_model": model,
-                        })
+            return Response({
+                "reply": (result.get("text") or "") if result.get("ok") else f"LLM error, echoing: {prompt}",
+                "error": None if result.get("ok") else (result.get("error") or "unknown"),
+                "rag_uploads_examples": rag_uploads_examples,
+                "rag_websites_examples": rag_websites_examples,
+                "web_results": web_results,
+                "used_assistants_web": used_assistants_web_flag,
+                "assistant_steps": steps_raw,
+                "assistant_model": assistant_model_label,
+                "used_linkedin": used_linkedin,
+                "linkedin_context_preview": linkedin_context_preview,
+                "used_trustpilot": used_trustpilot,
+                "trustpilot_context_preview": trustpilot_context_preview,
+                "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
+                "brand_guidelines": brand_guidelines_out,
+                "prompt_messages": messages,
+                "selected_model": selected_model,
+            })
         except Exception as e:
             return Response({
                 "reply": f"LLM error, echoing: {prompt}",

@@ -4,6 +4,7 @@ import re
 from typing import Iterable, List, Optional
 import os
 import requests
+from django.conf import settings
 
 import numpy as np
 
@@ -91,4 +92,169 @@ def fetch_web_results(query: str, max_results: int = 3, timeout: int = 12) -> li
         return out
     except Exception:
         return []
+
+
+# --------------- OpenAI client wrapper ---------------
+
+def _get_openai_api_key() -> str | None:
+    try:
+        return getattr(settings, "OPENAI_API_KEY", None)
+    except Exception:
+        return None
+
+
+def normalize_model_name(requested: str | None) -> str:
+    """
+    Normalize model names to current recommended defaults.
+    - Reasoning family (starts with 'o'): keep as-is (e.g., 'o4-mini')
+    - Otherwise default to 'gpt-4o' for quality
+    """
+    name = (requested or "").strip()
+    if name and name.lower().startswith("o"):
+        return name
+    # Default/general chat model
+    return name or "gpt-4o"
+
+
+def _extract_text_from_responses_payload(data: dict) -> str:
+    """Best-effort extraction of assistant text from Responses API payload."""
+    if not isinstance(data, dict):
+        return ""
+    # 1) Direct convenience field
+    if isinstance(data.get("output_text"), str) and data.get("output_text"):
+        return str(data.get("output_text"))
+    # 2) Iterate over 'output' list variants
+    output = data.get("output")
+    if isinstance(output, list) and output:
+        # Try output_text entries first
+        for item in output:
+            if isinstance(item, dict):
+                if item.get("type") == "output_text" and isinstance(item.get("text"), str):
+                    if item.get("text"):
+                        return str(item.get("text"))
+        # Then try message entries with nested content
+        for item in output:
+            if isinstance(item, dict) and item.get("type") == "message":
+                content_list = item.get("content")
+                if isinstance(content_list, list):
+                    # Find text-like parts
+                    texts: list[str] = []
+                    for part in content_list:
+                        if not isinstance(part, dict):
+                            continue
+                        p_type = part.get("type")
+                        if p_type in {"output_text", "text"}:
+                            text_val = part.get("text")
+                            if isinstance(text_val, str) and text_val:
+                                texts.append(text_val)
+                            elif isinstance(text_val, dict) and isinstance(text_val.get("value"), str):
+                                texts.append(str(text_val.get("value")))
+                    if texts:
+                        return "\n".join(texts)
+    # 3) Choices-like fallback (compat)
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            msg = first.get("message") or {}
+            if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                return str(msg.get("content"))
+    # 4) Generic 'content' fallback if it's plain string
+    if isinstance(data.get("content"), str) and data.get("content"):
+        return str(data.get("content"))
+    return ""
+
+
+def call_openai_responses(*, model: str, system_text: str, user_text: str, max_output_tokens: int = 512, temperature: float = 0.7, reasoning_effort: str | None = None, timeout: int = 30) -> dict:
+    """
+    Call OpenAI Responses API for both reasoning and non-reasoning models with a unified payload.
+    Returns a dict with keys: { ok: bool, text: str, raw: dict, error: str|None }
+    """
+    api_key = _get_openai_api_key()
+    if not api_key:
+        return {"ok": False, "text": "", "raw": {}, "error": "Missing OPENAI_API_KEY"}
+
+    is_reasoning = model.lower().startswith("o")
+    url = "https://api.openai.com/v1/responses"
+
+    payload: dict = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_text},
+        ],
+        "max_output_tokens": int(max_output_tokens),
+        "temperature": float(temperature),
+    }
+    if is_reasoning:
+        payload["reasoning"] = {"effort": (reasoning_effort or "medium")}
+
+    try:
+        resp = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=timeout,
+        )
+    except Exception as e:
+        return {"ok": False, "text": "", "raw": {}, "error": str(e)}
+
+    if not resp.ok:
+        return {"ok": False, "text": "", "raw": {"status_code": resp.status_code, "body": resp.text}, "error": resp.text}
+
+    data = {}
+    try:
+        data = resp.json()
+    except Exception:
+        return {"ok": False, "text": "", "raw": {}, "error": "Invalid JSON from OpenAI"}
+
+    out_text: str = _extract_text_from_responses_payload(data)
+    if not isinstance(out_text, str) or not out_text.strip():
+        return {"ok": False, "text": "", "raw": data, "error": "No text in Responses payload"}
+    return {"ok": True, "text": out_text, "raw": data, "error": None}
+
+
+def call_openai_chat_completions(*, model: str, messages: list[dict], max_tokens: int = 512, temperature: float = 0.7, timeout: int = 30) -> dict:
+    """Fallback to legacy Chat Completions for non-reasoning models."""
+    api_key = _get_openai_api_key()
+    if not api_key:
+        return {"ok": False, "text": "", "raw": {}, "error": "Missing OPENAI_API_KEY"}
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            },
+            timeout=timeout,
+        )
+    except Exception as e:
+        return {"ok": False, "text": "", "raw": {}, "error": str(e)}
+    if not resp.ok:
+        return {"ok": False, "text": "", "raw": {"status_code": resp.status_code, "body": resp.text}, "error": resp.text}
+    try:
+        data = resp.json()
+    except Exception:
+        return {"ok": False, "text": "", "raw": {}, "error": "Invalid JSON from Chat Completions"}
+    text = ""
+    if isinstance(data, dict):
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                msg = first.get("message") or {}
+                if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                    text = str(msg.get("content"))
+    if not text.strip():
+        return {"ok": False, "text": "", "raw": data, "error": "No text in Chat Completions response"}
+    return {"ok": True, "text": text, "raw": data, "error": None}
 

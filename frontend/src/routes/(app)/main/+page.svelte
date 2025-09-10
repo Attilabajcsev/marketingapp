@@ -63,9 +63,10 @@
 	let outputText: string = $state('');
 	let generating: boolean = $state(false);
 	let contentType: 'linkedin' | 'facebook' | 'newsletter' | 'blog' = $state('linkedin');
-	let modelName: string = $state('gpt-4o-mini');
+	let modelName: string = $state('gpt-4o');
 	let useWeb: boolean = $state(false);
 	let showTrace: boolean = $state(false);
+	let reasoningEffort: 'low' | 'medium' | 'high' = $state('medium');
 	let webCompany: string = $state('');
 	let webLinksRaw: string = $state('');
 	let copySuccess: boolean = $state(false);
@@ -311,7 +312,8 @@
 					user_links: webLinksRaw
 						.split(/\n|,/)
 						.map((s) => s.trim())
-						.filter((s) => !!s)
+						.filter((s) => !!s),
+					reasoning_effort: modelName==='o4-mini' ? 'high' : undefined
 				})
 			});
 			if (!res.ok) {
@@ -335,7 +337,9 @@
 				used_channel_examples: data.used_channel_examples,
 				used_assistants_web: Boolean(data.used_assistants_web),
 				assistant_steps: Array.isArray(data.assistant_steps) ? data.assistant_steps : [],
-				web_results: Array.isArray(data.web_results) ? data.web_results : []
+				web_results: Array.isArray(data.web_results) ? data.web_results : [],
+				selected_model: data.selected_model,
+				assistant_model: data.assistant_model
 			};
 		} catch (e) {
 			console.error(e);
@@ -632,23 +636,22 @@
 			<div class="flex flex-col gap-4 h-full">
 				<div class="rounded-md border border-gray-200 bg-white p-4 flex flex-col flex-1">
 					<h2 class="mb-2 text-lg font-semibold">Write your prompt:</h2>
-					<div class="mb-2 flex items-center gap-2">
-						<label class="text-sm text-gray-600">Kanal</label>
-						<div class="flex gap-2">
-							<button type="button" class={`btn btn-sm ${contentType==='linkedin'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='linkedin'}>LinkedIn</button>
-							<button type="button" class={`btn btn-sm ${contentType==='facebook'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='facebook'}>Facebook</button>
-							<button type="button" class={`btn btn-sm ${contentType==='newsletter'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='newsletter'}>Nyhedsbrev</button>
-							<button type="button" class={`btn btn-sm ${contentType==='blog'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='blog'}>Blog</button>
+					<div class="mb-2 flex flex-wrap items-center gap-4">
+						<div class="flex items-center gap-2">
+							<label class="text-sm text-gray-600">Kanal</label>
+							<div class="flex gap-2">
+								<button type="button" class={`btn btn-sm ${contentType==='linkedin'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='linkedin'}>LinkedIn</button>
+								<button type="button" class={`btn btn-sm ${contentType==='facebook'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='facebook'}>Facebook</button>
+								<button type="button" class={`btn btn-sm ${contentType==='newsletter'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='newsletter'}>Nyhedsbrev</button>
+								<button type="button" class={`btn btn-sm ${contentType==='blog'?'btn-neutral':'btn-outline'}`} onclick={() => contentType='blog'}>Blog</button>
+							</div>
 						</div>
-					</div>
-					<div class="mb-2 grid grid-cols-1 md:grid-cols-3 gap-2 items-center">
 						<div class="flex items-center gap-2">
 							<label class="text-sm text-gray-600">Model</label>
-							<select class="select select-bordered select-sm" bind:value={modelName}>
-								<option value="gpt-4o-mini">gpt-4o-mini (fast)</option>
-								<option value="gpt-4o">gpt-4o</option>
-								<option value="o4-mini">o4-mini (reasoning)</option>
-							</select>
+							<div class="flex gap-2">
+								<button type="button" class={`btn btn-sm ${modelName==='gpt-4o'?'btn-neutral':'btn-outline'}`} onclick={() => { modelName='gpt-4o'; }}>Quality</button>
+								<button type="button" class={`btn btn-sm ${modelName==='o4-mini'?'btn-neutral':'btn-outline'}`} onclick={() => { modelName='o4-mini'; }}>Thinking</button>
+							</div>
 						</div>
 						<label class="label cursor-pointer justify-start gap-2">
 							<input type="checkbox" class="toggle" bind:checked={useWeb} />
@@ -820,7 +823,7 @@
 			</div>
 			<div>
 				<h4 class="font-semibold mb-1">Assistants Web</h4>
-				<p class="text-sm">{auditData.used_assistants_web ? 'On' : 'Off'}</p>
+				<p class="text-sm">{auditData.used_assistants_web ? 'On' : 'Off'}{auditData.assistant_model ? ` • ${auditData.assistant_model}` : ''}</p>
 				{#if showTrace && auditData.assistant_steps?.length}
 					<pre class="whitespace-pre-wrap text-xs bg-base-200 p-2 rounded">{JSON.stringify(auditData.assistant_steps, null, 2)}</pre>
 				{/if}
@@ -828,6 +831,10 @@
 			<div>
 				<h4 class="font-semibold mb-1">Web results</h4>
 				<pre class="whitespace-pre-wrap text-sm bg-base-200 p-2 rounded">{JSON.stringify(auditData.web_results, null, 2)}</pre>
+			</div>
+			<div>
+				<h4 class="font-semibold mb-1">Model</h4>
+				<p class="text-sm">{auditData.selected_model || modelName}</p>
 			</div>
 		</div>
 		<div class="modal-action">

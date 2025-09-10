@@ -130,7 +130,8 @@ def generate(request: Request) -> Response:
     top_k = int(data.get("top_k") or 5)
     # Options for model, web usage, and directed web search
     use_web = bool(data.get("use_web"))
-    model = (data.get("model") or "gpt-3.5-turbo").strip()
+    model = (data.get("model") or "gpt-4o").strip()
+    reasoning_effort = (data.get("reasoning_effort") or "").strip().lower()
     web_company = (data.get("web_company") or "").strip()
     user_links = data.get("user_links") or []
     if not isinstance(user_links, list):
@@ -251,12 +252,15 @@ def generate(request: Request) -> Response:
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 }
-                # Create assistant (per-request, simplest)
+                # Create assistant (per-request, simplest). Some reasoning models are not supported for web tools, so map to a browsing-capable model.
+                assistants_model = model
+                if assistants_model.startswith("o"):
+                    assistants_model = "gpt-4o"
                 create_assistant = requests.post(
                     "https://api.openai.com/v1/assistants",
                     headers=a_headers,
                     json={
-                        "model": model,
+                        "model": assistants_model,
                         "instructions": sys_content,
                         "tools": [{"type": "web_search"}],
                     },
@@ -288,10 +292,17 @@ def generate(request: Request) -> Response:
                     raise RuntimeError(f"Add message failed: {add_msg.text}")
 
                 # Create run
+                # Combine instructions with any web directives to steer browsing
+                combined_instructions = sys_content
+                if web_company or user_links:
+                    combined_instructions = (
+                        (sys_content + "\n\n") if sys_content else ""
+                    ) + "Følg websøgeinstruktionerne i prompten og prioriter officielle kilder og brugerens links."
+
                 create_run = requests.post(
                     f"https://api.openai.com/v1/threads/{thread_id}/runs",
                     headers=a_headers,
-                    json={"assistant_id": assistant_id},
+                    json={"assistant_id": assistant_id, "instructions": combined_instructions},
                     timeout=30,
                 )
                 if not create_run.ok:
@@ -357,6 +368,7 @@ def generate(request: Request) -> Response:
                     "web_results": [],
                     "used_assistants_web": used_assistants_web,
                     "assistant_steps": steps_raw,
+                    "assistant_model": assistants_model,
                     "used_linkedin": used_linkedin,
                     "linkedin_context_preview": linkedin_context_preview,
                     "used_trustpilot": used_trustpilot,
@@ -364,58 +376,129 @@ def generate(request: Request) -> Response:
                     "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
                     "brand_guidelines": brand_guidelines_out,
                     "prompt_messages": messages,
+                    "selected_model": model,
                 })
             else:
-                # Standard Chat Completions
-                resp = requests.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "max_tokens": 512,
-                        "temperature": 0.7,
-                    },
-                    timeout=30,
-                )
-                if resp.ok:
-                    data = resp.json()
-                    text = data["choices"][0]["message"]["content"]
-                    return Response({
-                        "reply": text,
-                        "rag_uploads_examples": rag_uploads_examples,
-                        "rag_websites_examples": rag_websites_examples,
-                        "web_results": web_results,
-                        "used_assistants_web": False,
-                        "assistant_steps": [],
-                        "used_linkedin": used_linkedin,
-                        "linkedin_context_preview": linkedin_context_preview,
-                        "used_trustpilot": used_trustpilot,
-                        "trustpilot_context_preview": trustpilot_context_preview,
-                        "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
-                        "brand_guidelines": brand_guidelines_out,
-                        "prompt_messages": messages,
-                    })
+                if model.startswith("o"):
+                    # Use Responses API for reasoning models
+                    resp = requests.post(
+                        "https://api.openai.com/v1/responses",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": model,
+                            "reasoning": {"effort": reasoning_effort or "medium"},
+                            "input": [
+                                {"role": "system", "content": messages[0]["content"]},
+                                {"role": "user", "content": messages[1]["content"]},
+                            ],
+                            "max_output_tokens": 512,
+                            "temperature": 0.7,
+                        },
+                        timeout=30,
+                    )
+                    if resp.ok:
+                        data_r = resp.json()
+                        # Responses API returns output_text in a 'output' list or 'content'. Fallback parsing.
+                        out_text = None
+                        if "output" in data_r and isinstance(data_r["output"], list) and data_r["output"]:
+                            # find first text item
+                            for it in data_r["output"]:
+                                if isinstance(it, dict) and it.get("type") == "output_text":
+                                    out_text = it.get("text")
+                                    break
+                        if not out_text:
+                            # fallback: choices-like
+                            out_text = data_r.get("content") or ""
+                        return Response({
+                            "reply": out_text or "",
+                            "rag_uploads_examples": rag_uploads_examples,
+                            "rag_websites_examples": rag_websites_examples,
+                            "web_results": web_results,
+                            "used_assistants_web": False,
+                            "assistant_steps": [],
+                            "used_linkedin": used_linkedin,
+                            "linkedin_context_preview": linkedin_context_preview,
+                            "used_trustpilot": used_trustpilot,
+                            "trustpilot_context_preview": trustpilot_context_preview,
+                            "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
+                            "brand_guidelines": brand_guidelines_out,
+                            "prompt_messages": messages,
+                            "selected_model": model,
+                        })
+                    else:
+                        return Response({
+                            "reply": f"LLM error, echoing: {prompt}",
+                            "error": resp.text,
+                            "rag_uploads_examples": rag_uploads_examples,
+                            "rag_websites_examples": rag_websites_examples,
+                            "web_results": web_results,
+                            "used_assistants_web": False,
+                            "assistant_steps": [],
+                            "used_linkedin": used_linkedin,
+                            "linkedin_context_preview": linkedin_context_preview,
+                            "used_trustpilot": used_trustpilot,
+                            "trustpilot_context_preview": trustpilot_context_preview,
+                            "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
+                            "brand_guidelines": brand_guidelines_out,
+                            "prompt_messages": messages,
+                            "selected_model": model,
+                        })
                 else:
-                    return Response({
-                        "reply": f"LLM error, echoing: {prompt}",
-                        "error": resp.text,
-                        "rag_uploads_examples": rag_uploads_examples,
-                        "rag_websites_examples": rag_websites_examples,
-                        "web_results": web_results,
-                        "used_assistants_web": False,
-                        "assistant_steps": [],
-                        "used_linkedin": used_linkedin,
-                        "linkedin_context_preview": linkedin_context_preview,
-                        "used_trustpilot": used_trustpilot,
-                        "trustpilot_context_preview": trustpilot_context_preview,
-                        "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
-                        "brand_guidelines": brand_guidelines_out,
-                        "prompt_messages": messages,
-                    })
+                    # Standard Chat Completions for non-reasoning models
+                    resp = requests.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": model,
+                            "messages": messages,
+                            "max_tokens": 512,
+                            "temperature": 0.7,
+                        },
+                        timeout=30,
+                    )
+                    if resp.ok:
+                        data = resp.json()
+                        text = data["choices"][0]["message"]["content"]
+                        return Response({
+                            "reply": text,
+                            "rag_uploads_examples": rag_uploads_examples,
+                            "rag_websites_examples": rag_websites_examples,
+                            "web_results": web_results,
+                            "used_assistants_web": False,
+                            "assistant_steps": [],
+                            "used_linkedin": used_linkedin,
+                            "linkedin_context_preview": linkedin_context_preview,
+                            "used_trustpilot": used_trustpilot,
+                            "trustpilot_context_preview": trustpilot_context_preview,
+                            "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
+                            "brand_guidelines": brand_guidelines_out,
+                            "prompt_messages": messages,
+                            "selected_model": model,
+                        })
+                    else:
+                        return Response({
+                            "reply": f"LLM error, echoing: {prompt}",
+                            "error": resp.text,
+                            "rag_uploads_examples": rag_uploads_examples,
+                            "rag_websites_examples": rag_websites_examples,
+                            "web_results": web_results,
+                            "used_assistants_web": False,
+                            "assistant_steps": [],
+                            "used_linkedin": used_linkedin,
+                            "linkedin_context_preview": linkedin_context_preview,
+                            "used_trustpilot": used_trustpilot,
+                            "trustpilot_context_preview": trustpilot_context_preview,
+                            "used_channel_examples": {"channel": content_type or "linkedin", "count": 2 if (content_type or "") == "blog" else min(5,  len(rag_uploads_examples) + len(rag_websites_examples))},
+                            "brand_guidelines": brand_guidelines_out,
+                            "prompt_messages": messages,
+                            "selected_model": model,
+                        })
         except Exception as e:
             return Response({
                 "reply": f"LLM error, echoing: {prompt}",
